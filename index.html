@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14101C">
+<title>NAMTRAN</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+:root{
+  /* Grounded in the device's own palette. Plum-black rather than pure
+     black -- it sits next to a purple LED strip in a bedroom, not in a
+     terminal. */
+  --ink:#14101C; --ink-2:#1B1526; --surface:#221A33; --surface-2:#2C2240;
+  --line:#3A2F52;
+  --purple:#9B3DF0; --lilac:#C9A7FF; --amber:#FFB84D; --mint:#5BE7C4;
+  --text:#F2EDFA; --dim:#9A8FB5; --faint:#6B5F86;
+  --r:14px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  background:
+    radial-gradient(1100px 520px at 50% -8%, #2A1B45 0%, transparent 62%),
+    var(--ink);
+  color:var(--text);
+  font-family:"Space Grotesk",system-ui,-apple-system,sans-serif;
+  min-height:100vh; padding:0 0 44px;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:560px;margin:0 auto;padding:0 16px}
+
+/* ── Signature: the live LED strip ───────────────────────────────── */
+.strip-shell{position:sticky;top:0;z-index:30;padding:10px 16px 12px;
+  background:linear-gradient(180deg,var(--ink) 62%,transparent);
+  backdrop-filter:blur(8px)}
+.strip{display:flex;gap:2px;height:26px;max-width:560px;margin:0 auto;
+  padding:5px;border-radius:9px;background:#0B0812;
+  border:1px solid var(--line);overflow:hidden}
+.led{flex:1;border-radius:2px;background:#151021;transition:background .06s linear}
+.strip-cap{max-width:560px;margin:6px auto 0;display:flex;justify-content:space-between;
+  font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.14em;color:var(--faint)}
+
+/* ── Header ──────────────────────────────────────────────────────── */
+header{padding:6px 0 14px;display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.02em}
+h1 span{color:var(--purple)}
+.live{display:flex;align-items:center;gap:7px;font:600 11px/1 "JetBrains Mono",monospace;
+  letter-spacing:.1em;color:var(--dim);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.dot.on{background:var(--mint);box-shadow:0 0 0 4px rgba(91,231,196,.16)}
+.dot.bad{background:var(--amber);box-shadow:0 0 0 4px rgba(255,184,77,.16)}
+
+/* ── Cards ───────────────────────────────────────────────────────── */
+.card{background:linear-gradient(180deg,var(--surface),var(--ink-2));
+  border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px}
+.eyebrow{font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.18em;
+  color:var(--faint);margin:0 0 12px}
+
+/* ── Now playing ─────────────────────────────────────────────────── */
+.now{display:flex;gap:15px;align-items:center}
+.disc{width:78px;height:78px;flex:none;border-radius:50%;position:relative;
+  background:conic-gradient(from 0deg,#3A2F52,#191225,#3A2F52,#191225,#3A2F52);
+  display:grid;place-items:center;border:1px solid var(--line)}
+.disc::after{content:"";width:22px;height:22px;border-radius:50%;
+  background:var(--ink);border:1px solid var(--line)}
+.disc.spin{animation:spin 3.4s linear infinite}
+.disc.bt{background:radial-gradient(circle at 50% 42%,rgba(79,195,247,.34),transparent 68%),var(--ink-2)}
+.disc.bt::after{content:"⌁";width:auto;height:auto;border:0;background:none;
+  font-size:30px;color:#4FC3F7;line-height:1}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.disc.spin{animation:none}}
+.meta{min-width:0;flex:1}
+.title{font-size:17px;font-weight:700;margin:0 0 3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.artist{font-size:13px;color:var(--dim);margin:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:4px;background:#150F22;border-radius:99px;margin:13px 0 6px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;border-radius:99px;
+  background:linear-gradient(90deg,var(--purple),var(--lilac));transition:width .4s linear}
+.times{display:flex;justify-content:space-between;
+  font:400 11px/1 "JetBrains Mono",monospace;color:var(--faint)}
+.transport{display:flex;gap:10px;justify-content:center;margin-top:14px}
+
+/* ── Controls ────────────────────────────────────────────────────── */
+button{font-family:inherit;color:var(--text);cursor:pointer;border:1px solid var(--line);
+  background:var(--surface-2);border-radius:10px;transition:border-color .12s,background .12s}
+button:hover{border-color:var(--purple)}
+button:focus-visible{outline:2px solid var(--lilac);outline-offset:2px}
+button:disabled{opacity:.42;cursor:not-allowed}
+.tbtn{width:52px;height:44px;font-size:16px;display:grid;place-items:center}
+.tbtn.main{width:64px;background:var(--purple);border-color:var(--purple);font-size:18px}
+.seg{display:flex;gap:7px}
+.seg button{flex:1;padding:11px 8px;font-size:13px;font-weight:500}
+.seg button[aria-pressed="true"]{background:var(--purple);border-color:var(--purple)}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chips button{padding:8px 13px;font-size:12.5px;border-radius:99px}
+.chips button[aria-pressed="true"]{background:var(--purple);border-color:var(--purple)}
+.stack{display:flex;flex-direction:column;gap:7px}
+.stack button{padding:11px 13px;text-align:left;font-size:13.5px}
+.stack button[aria-pressed="true"]{border-color:var(--purple);background:var(--surface-2)}
+.stack small{display:block;color:var(--dim);font-size:11.5px;margin-top:3px;line-height:1.4}
+.stack button[aria-pressed="true"] small{color:var(--lilac)}
+.sub{font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.14em;
+  color:var(--faint);margin:16px 0 9px}
+.sub:first-child{margin-top:0}
+
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:none}
+input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:99px;background:#150F22}
+input[type=range]::-moz-range-track{height:5px;border-radius:99px;background:#150F22}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;
+  border-radius:50%;background:var(--lilac);margin-top:-7.5px;border:2px solid var(--ink)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border:2px solid var(--ink);
+  border-radius:50%;background:var(--lilac)}
+.rowlabel{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+.rowlabel b{font:600 13px/1 "JetBrains Mono",monospace;color:var(--lilac)}
+
+/* ── Tokens: mirrors the physical slots ──────────────────────────── */
+.slots{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.slot{aspect-ratio:1/1.35;border-radius:8px;background:#150F22;border:1px solid var(--line);
+  display:grid;place-items:center;text-align:center;padding:3px;
+  font-size:9.5px;line-height:1.15;color:var(--faint);overflow:hidden}
+.slot.filled{background:linear-gradient(180deg,rgba(155,61,240,.26),rgba(155,61,240,.06));
+  border-color:var(--purple);color:var(--text);font-weight:500}
+.slot.filled.cortis{background:linear-gradient(180deg,rgba(6,182,212,.26),rgba(6,182,212,.06));
+  border-color:#06B6D4}
+.side{font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.14em;
+  color:var(--faint);margin:0 0 7px}
+.side:last-of-type{margin-top:14px}
+
+/* ── Swatches ────────────────────────────────────────────────────── */
+.pal{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
+.sw{aspect-ratio:1;border-radius:10px;border:2px solid transparent;padding:0;
+  position:relative;overflow:hidden}
+.sw[aria-pressed="true"]{border-color:#fff}
+.sw i{position:absolute;inset:auto 4px 4px auto;width:10px;height:10px;border-radius:50%}
+
+.status{display:flex;flex-wrap:wrap;gap:7px}
+.pill{display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:99px;
+  background:#150F22;border:1px solid var(--line);
+  font:400 11.5px/1 "JetBrains Mono",monospace;color:var(--dim)}
+.danger{border-color:#7A2E3A;color:#FF8A9B}
+.danger:hover{border-color:#E0465C}
+.foot{text-align:center;color:var(--faint);font-size:11.5px;margin-top:22px;line-height:1.6}
+.offline .card{opacity:.5;pointer-events:none}
+.offline .card.always{opacity:1;pointer-events:auto}
+</style>
+</head>
+<body class="offline" id="body">
+
+<!-- Signature element: a live mirror of the physical LED strip. Runs
+     the same animations in the browser, driven by the real audio level
+     coming off the device. -->
+<div class="strip-shell">
+  <div class="strip" id="strip" aria-hidden="true"></div>
+  <div class="strip-cap"><span id="stripMode">STRIP — OFF</span><span id="stripSrc">—</span></div>
+</div>
+
+<div class="wrap">
+
+  <header>
+    <h1>NAM<span>TRAN</span></h1>
+    <div class="live"><span class="dot" id="dot"></span><span id="conn">CONNECTING</span></div>
+  </header>
+
+  <!-- Now playing -->
+  <section class="card">
+    <p class="eyebrow">NOW PLAYING</p>
+    <div class="now">
+      <div class="disc" id="disc"></div>
+      <div class="meta">
+        <p class="title" id="title">Nothing playing</p>
+        <p class="artist" id="artist">Place a disc or connect over Bluetooth</p>
+      </div>
+    </div>
+    <div class="bar"><i id="barFill"></i></div>
+    <div class="times"><span id="tNow">0:00</span><span id="tEnd">--:--</span></div>
+    <div class="transport">
+      <button class="tbtn" data-cmd="prev" title="Previous">⏮</button>
+      <button class="tbtn main" id="playBtn" data-cmd="play" title="Play or pause">▶</button>
+      <button class="tbtn" data-cmd="next" title="Next">⏭</button>
+    </div>
+  </section>
+
+  <!-- Mode -->
+  <section class="card">
+    <p class="eyebrow">MODE</p>
+    <div class="seg" id="modeSeg">
+      <button data-mode="home">Home</button>
+      <button data-mode="bt">Bluetooth</button>
+      <button data-mode="vinyl">Vinyl</button>
+    </div>
+  </section>
+
+  <!-- Sound -->
+  <section class="card">
+    <p class="eyebrow">SOUND</p>
+    <div class="rowlabel"><span>Vinyl volume</span><b id="volVal">70%</b></div>
+    <input type="range" id="vol" min="0" max="100" value="70">
+    <div class="seg" style="margin-top:10px">
+      <button id="loopBtn" data-cmd="loop">Repeat off</button>
+    </div>
+  </section>
+
+  <!-- Lights -->
+  <section class="card">
+    <p class="eyebrow">LIGHTS</p>
+
+    <p class="sub">WHILE MUSIC PLAYS</p>
+    <div class="stack" id="syncList"></div>
+
+    <p class="sub">DECORATION — WHEN IDLE</p>
+    <div class="chips" id="animList"></div>
+
+    <p class="sub">LAMP BRIGHTNESS</p>
+    <div class="seg" id="lampSeg">
+      <button data-lamp="0">Off</button>
+      <button data-lamp="1">Low</button>
+      <button data-lamp="2">Mid</button>
+      <button data-lamp="3">High</button>
+    </div>
+  </section>
+
+  <!-- Tokens -->
+  <section class="card">
+    <p class="eyebrow">TOKENS</p>
+    <p class="side">LEFT — SLOTS 1–7</p>
+    <div class="slots" id="slotsL"></div>
+    <p class="side">RIGHT — SLOTS 8–14</p>
+    <div class="slots" id="slotsR"></div>
+    <p class="sub">ELEMENT MODE</p>
+    <div class="stack" id="elemList"></div>
+  </section>
+
+  <!-- Look -->
+  <section class="card">
+    <p class="eyebrow">LOOK</p>
+    <p class="sub">PALETTE</p>
+    <div class="pal" id="palList"></div>
+    <p class="sub">BACKGROUND</p>
+    <div class="chips" id="texList"></div>
+  </section>
+
+  <!-- System -->
+  <section class="card always">
+    <p class="eyebrow">SYSTEM</p>
+    <div class="status" style="margin-bottom:13px">
+      <span class="pill" id="pSD">SD —</span>
+      <span class="pill" id="pNFC">NFC —</span>
+      <span class="pill" id="pWifi">Wi-Fi —</span>
+    </div>
+    <div class="seg">
+      <button data-cmd="restart">Restart</button>
+      <button class="danger" id="resetBtn">Factory reset</button>
+    </div>
+  </section>
+
+  <p class="foot">
+    Controls the NAMTRAN on your desk.<br>
+    Both need to be online at the same time.
+  </p>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   PROTOCOL
+   Two topics, both JSON. One state blob out, one command in -- far
+   easier to keep in sync than a topic per property, and adding a
+   field later breaks nothing.
+       <BASE>/state   device -> here   (retained)
+       <BASE>/cmd     here   -> device
+       <BASE>/lwt     last will, "offline"
+   ══════════════════════════════════════════════════════════════════ */
+const BASE  = "namtran_0ce1c1ee4b524eed03061704";
+/* Port 8884 (WSS), not 1883. This page is served over HTTPS from
+   GitHub Pages, and a browser blocks plain ws:// from an https:// page
+   as mixed content -- it fails silently, which looks like the device
+   being offline. */
+const BROKER = "wss://broker.hivemq.com:8884/mqtt";
+
+const MEMBERS = {1:"RM",2:"Jin",3:"Suga",4:"J-Hope",5:"Jimin",6:"V",7:"Jungkook",
+                 8:"Jenious",9:"Adonis",10:"Marty",11:"Nathan",12:"Eyedi"};
+
+const SYNC = [
+  ["Off",     "Music plays with the lights left dark."],
+  ["Party",   "Rainbow across the strip. Every beat scatters it into different colours."],
+  ["Solid",   "One colour at a time, racing through the spectrum. Beats jump the colour."],
+  ["Meter",   "A VU bar filling from both ends, green through amber to red."],
+  ["Pulse",   "The whole strip breathes on one slowly drifting colour. The calm one."],
+  ["Sparkle", "Beats throw bright specks that fade out. Dark between hits."],
+  ["Song colour","This song's own colour. Only for SWIM, Butter and REDRED."]
+];
+const ANIMS = ["Off","Rainbow","Pulse","Chase","Strobe","Party"];
+const ELEMS = [
+  ["BTS mode",     "Tokens react only during BTS songs."],
+  ["CORTIS mode",  "Tokens react only during CORTIS songs."],
+  ["All on",       "Everything reacts, whatever is playing."],
+  ["All semi off", "Only the strip reacts. Tokens hold solid purple."],
+  ["All off",      "Only the strip reacts. Tokens stay dark."]
+];
+const PALETTES = [
+  ["Midnight","#0B0B18","#235B8A"],["Nebula","#1A0B2E","#9B3DF0"],
+  ["Ocean","#081C24","#1AA7B0"],   ["Sunset","#2A120B","#E0703A"],
+  ["Forest","#0B1F14","#3DAA5E"],  ["Sakura","#2A0F1C","#FF6FA5"],
+  ["Amethyst","#150B24","#7E5BEF"],["Ember","#24090B","#E8453C"],
+  ["Mono","#141416","#8A8A96"],    ["Aurora","#061A1A","#22D3A6"]
+];
+const TEXTURES = ["Plain","Dots","Grid","Diagonal","Stars","Weave"];
+
+let S = {};           // last known device state
+let client = null;
+
+/* ── LED strip ──────────────────────────────────────────────────── */
+const N = 42;         // fewer than the real 60: keeps each cell tappable-wide on a phone
+const strip = document.getElementById('strip');
+const cells = [];
+for (let i=0;i<N;i++){ const d=document.createElement('div'); d.className='led'; strip.appendChild(d); cells.push(d); }
+
+const hsv = (h,s,v)=>{ // h,s,v all 0-255, matching the firmware's integer HSV
+  h=((h%256)+256)%256; const r6=Math.floor(h/43), f=(h-r6*43)*6;
+  const p=(v*(255-s))>>8, q=(v*(255-((s*f)>>8)))>>8, t=(v*(255-((s*(255-f))>>8)))>>8;
+  const m=[[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][r6%6];
+  return `rgb(${m[0]},${m[1]},${m[2]})`;
+};
+
+let f = 0;
+function paintStrip(){
+  f++;
+  const playing = S.playing && (S.mode==='bt'||S.mode==='vinyl');
+  const lvl = playing ? (S.level||0) : 0;
+  const style = S.musicStyle|0, anim = S.ledAnim|0;
+  let label;
+
+  if (playing) {
+    label = "SYNC — " + (SYNC[style]?SYNC[style][0].toUpperCase():"?");
+    const beat = lvl > 170;
+    for (let i=0;i<N;i++){
+      let c = '#151021';
+      if (style===1){ c = hsv(f*3 + i*(255/N) + (beat?i*53:0), 255, Math.max(lvl,20)); }
+      else if (style===2){ c = hsv(f*6 + (beat?70:0), 255, Math.max(lvl,20)); }
+      else if (style===3){ const half=N/2, lit=(lvl*half)/255, pos=i<half?i:N-1-i;
+                           if (pos<lit) c = hsv(85-(pos*85/half),255,220); }
+      else if (style===4){ c = hsv(f/3, 230, Math.max(lvl,15)); }
+      else if (style===5){ const h=(i*2654435761 ^ Math.floor(f/6)*40503)>>>0;
+                           if ((h&3)===0 && beat) c = hsv((h>>8)&255,255,255); }
+      else if (style===6){ const sp=(S.special|0);
+                           const v=Math.max(lvl,20);
+                           c = sp===2 ? (Math.floor(f/14)%2 ? `rgb(${v},0,0)` : `rgb(0,${v},0)`)
+                             : sp===0 ? `rgb(0,${Math.round(v*.35)},${v})`
+                                      : `rgb(${v},${Math.round(v*.84)},0)`; }
+      cells[i].style.background = c;
+    }
+  } else {
+    label = "STRIP — " + (ANIMS[anim]||"Off").toUpperCase();
+    for (let i=0;i<N;i++){
+      let c = '#151021';
+      if (anim===1){ c = hsv(i*(255/N)+f*4,255,255); }
+      else if (anim===2){ const ph=(f*6)&255; c = hsv(f,255, ph<128?ph*2:(255-ph)*2); }
+      else if (anim===3){ const head=Math.floor(f/2)%N, d=(head-i+N)%N;
+                          if (d<5) c = hsv(f,255,255-d*55); }
+      else if (anim===4){ const on=(f%6)<2; c = on?'#fff':'#151021'; }
+      else if (anim===5){ const h=(i*2654435761 ^ Math.floor(f/3)*40503)>>>0;
+                          if ((h&7)!==0) c = hsv((h>>8)&255,255,255); }
+      cells[i].style.background = c;
+    }
+  }
+  document.getElementById('stripMode').textContent = label;
+  document.getElementById('stripSrc').textContent =
+    S.mode==='bt' ? 'BLUETOOTH' : S.mode==='vinyl' ? 'VINYL' : 'IDLE';
+}
+const reduced = matchMedia('(prefers-reduced-motion:reduce)').matches;
+setInterval(paintStrip, reduced ? 500 : 60);
+
+/* ── Build the option lists from the tables above ────────────────── */
+function build(){
+  const sl = document.getElementById('syncList');
+  SYNC.forEach((s,i)=>{ const b=document.createElement('button');
+    b.innerHTML = s[0] + '<small>' + s[1] + '</small>';
+    b.onclick = ()=>send({cmd:'musicStyle', value:i}); b.dataset.sync=i; sl.appendChild(b); });
+
+  const al = document.getElementById('animList');
+  ANIMS.forEach((n,i)=>{ const b=document.createElement('button'); b.textContent=n;
+    b.onclick = ()=>send({cmd:'ledAnim', value:i}); b.dataset.anim=i; al.appendChild(b); });
+
+  const el = document.getElementById('elemList');
+  ELEMS.forEach((e,i)=>{ const b=document.createElement('button');
+    b.innerHTML = e[0] + '<small>' + e[1] + '</small>';
+    b.onclick = ()=>send({cmd:'elementMode', value:i}); b.dataset.elem=i; el.appendChild(b); });
+
+  const pl = document.getElementById('palList');
+  PALETTES.forEach((p,i)=>{ const b=document.createElement('button'); b.className='sw';
+    b.title=p[0]; b.setAttribute('aria-label',p[0]);
+    b.style.background = `linear-gradient(160deg, ${p[1]}, #05030A)`;
+    const dot=document.createElement('i'); dot.style.background=p[2]; b.appendChild(dot);
+    b.onclick = ()=>send({cmd:'theme', value:i}); b.dataset.pal=i; pl.appendChild(b); });
+
+  const tl = document.getElementById('texList');
+  TEXTURES.forEach((n,i)=>{ const b=document.createElement('button'); b.textContent=n;
+    b.onclick = ()=>send({cmd:'texture', value:i}); b.dataset.tex=i; tl.appendChild(b); });
+
+  for (const [id,from] of [['slotsL',0],['slotsR',7]]){
+    const g=document.getElementById(id);
+    for (let i=0;i<7;i++){ const d=document.createElement('div');
+      d.className='slot'; d.textContent=(from+i+1); d.dataset.slot=from+i; g.appendChild(d); }
+  }
+}
+build();
+
+/* ── Render device state ─────────────────────────────────────────── */
+const mmss = ms => { if(!ms||ms<0) return '--:--';
+  const t=Math.floor(ms/1000); return Math.floor(t/60)+':'+String(t%60).padStart(2,'0'); };
+const press = (sel, on) => document.querySelectorAll(sel)
+  .forEach(b => b.setAttribute('aria-pressed', on(b) ? 'true' : 'false'));
+
+function render(){
+  const playing = !!S.playing;
+  document.getElementById('title').textContent  = S.title  || 'Nothing playing';
+  document.getElementById('artist').textContent = S.artist || (S.mode==='vinyl'
+    ? 'Place a disc on the platform' : 'Connect your phone over Bluetooth');
+  document.getElementById('playBtn').textContent = playing ? '❚❚' : '▶';
+  document.getElementById('playBtn').dataset.cmd = playing ? 'pause' : 'play';
+
+  const disc = document.getElementById('disc');
+  disc.className = 'disc' + (S.mode==='bt' ? ' bt' : '') + (playing && S.mode!=='bt' ? ' spin' : '');
+
+  const pct = (S.durMs>0) ? Math.min(100, (S.posMs/S.durMs)*100) : 0;
+  document.getElementById('barFill').style.width = pct + '%';
+  document.getElementById('tNow').textContent = mmss(S.posMs);
+  document.getElementById('tEnd').textContent = mmss(S.durMs);
+
+  press('#modeSeg button', b => b.dataset.mode === S.mode);
+  press('#lampSeg button', b => +b.dataset.lamp === (S.lamp|0));
+  press('[data-sync]',     b => +b.dataset.sync === (S.musicStyle|0));
+  press('[data-anim]',     b => +b.dataset.anim === (S.ledAnim|0));
+  press('[data-elem]',     b => +b.dataset.elem === (S.elementMode|0));
+  press('[data-pal]',      b => +b.dataset.pal  === (S.theme|0));
+  press('[data-tex]',      b => +b.dataset.tex  === (S.texture|0));
+
+  if (document.activeElement !== document.getElementById('vol')){
+    document.getElementById('vol').value = S.volume ?? 70;
+    document.getElementById('volVal').textContent = (S.volume ?? 70) + '%';
+  }
+  const lb = document.getElementById('loopBtn');
+  lb.textContent = S.loop ? 'Repeat on' : 'Repeat off';
+  lb.setAttribute('aria-pressed', S.loop ? 'true' : 'false');
+
+  const toks = S.tokens || [];
+  document.querySelectorAll('.slot').forEach(d=>{
+    const id = toks[+d.dataset.slot] | 0;
+    d.className = 'slot' + (id ? ' filled' + (id>=8 ? ' cortis' : '') : '');
+    d.textContent = id ? (MEMBERS[id] || id) : (+d.dataset.slot + 1);
+  });
+
+  const pill = (el, ok, txt) => { el.textContent = txt;
+    el.style.color = ok===null ? 'var(--dim)' : ok ? 'var(--mint)' : 'var(--amber)'; };
+  pill(document.getElementById('pSD'),  S.sd ?? null,  'SD ' + (S.sd==null?'—':S.sd?'ready':'not found'));
+  pill(document.getElementById('pNFC'), S.nfc ?? null, 'NFC ' + (S.nfc==null?'—':S.nfc?'ready':'not found'));
+  pill(document.getElementById('pWifi'), S.rssi!=null ? S.rssi>-75 : null,
+       'Wi-Fi ' + (S.rssi!=null ? S.rssi+' dBm' : '—'));
+}
+
+/* ── MQTT ────────────────────────────────────────────────────────── */
+function setLink(state, text){
+  const d = document.getElementById('dot');
+  d.className = 'dot' + (state==='on' ? ' on' : state==='bad' ? ' bad' : '');
+  document.getElementById('conn').textContent = text;
+  document.getElementById('body').classList.toggle('offline', state!=='on');
+}
+
+function send(msg){
+  if (!client || !client.connected) return;
+  client.publish(BASE + '/cmd', JSON.stringify(msg));
+  // Optimistic: reflect the tap immediately rather than waiting a full
+  // round trip. The device's next state message is authoritative and
+  // will correct this if it disagreed.
+  if (msg.cmd==='mode')        S.mode = msg.value;
+  if (msg.cmd==='volume')      S.volume = msg.value;
+  if (msg.cmd==='ledAnim')     S.ledAnim = msg.value;
+  if (msg.cmd==='musicStyle')  S.musicStyle = msg.value;
+  if (msg.cmd==='lamp')        S.lamp = msg.value;
+  if (msg.cmd==='elementMode') S.elementMode = msg.value;
+  if (msg.cmd==='theme')       S.theme = msg.value;
+  if (msg.cmd==='texture')     S.texture = msg.value;
+  if (msg.cmd==='loop')        S.loop = msg.value;
+  if (msg.cmd==='play')        S.playing = true;
+  if (msg.cmd==='pause')       S.playing = false;
+  render();
+}
+
+function connect(){
+  setLink('', 'CONNECTING');
+  client = mqtt.connect(BROKER, {
+    clientId: 'ntran-web-' + Math.random().toString(16).slice(2,10),
+    keepalive: 30, reconnectPeriod: 3000, connectTimeout: 8000, clean: true
+  });
+
+  client.on('connect', ()=>{
+    client.subscribe([BASE + '/state', BASE + '/lwt']);
+    setLink('bad', 'WAITING');   // broker reached; device not heard from yet
+  });
+  client.on('reconnect', ()=> setLink('', 'RECONNECTING'));
+  client.on('error',     ()=> setLink('bad', 'ERROR'));
+  client.on('close',     ()=> setLink('', 'OFFLINE'));
+
+  client.on('message', (topic, buf)=>{
+    const txt = buf.toString();
+    if (topic.endsWith('/lwt')){
+      if (txt === 'offline') setLink('bad', 'DEVICE OFF');
+      return;
+    }
+    try { S = Object.assign(S, JSON.parse(txt)); }
+    catch(e){ return; }   // malformed payload: keep the last good state
+    setLink('on', 'LIVE');
+    render();
+  });
+}
+
+/* ── Wire up controls ────────────────────────────────────────────── */
+document.querySelectorAll('[data-cmd]').forEach(b=>{
+  b.onclick = ()=>{
+    const c = b.dataset.cmd;
+    if (c==='loop') send({cmd:'loop', value: !S.loop});
+    else            send({cmd:c});
+  };
+});
+document.querySelectorAll('#modeSeg button').forEach(b=>{
+  b.onclick = ()=> send({cmd:'mode', value:b.dataset.mode});
+});
+document.querySelectorAll('#lampSeg button').forEach(b=>{
+  b.onclick = ()=> send({cmd:'lamp', value:+b.dataset.lamp});
+});
+
+const vol = document.getElementById('vol');
+vol.addEventListener('input', ()=> document.getElementById('volVal').textContent = vol.value + '%');
+// Only publish on release -- dragging fires input continuously and
+// would flood the broker with dozens of messages per second.
+vol.addEventListener('change', ()=> send({cmd:'volume', value:+vol.value}));
+
+document.getElementById('resetBtn').onclick = ()=>{
+  if (confirm('Factory reset wipes the name, Wi-Fi and all saved settings. This cannot be undone.'))
+    send({cmd:'factoryReset'});
+};
+
+render();
+connect();
+</script>
+</body>
+</html>
