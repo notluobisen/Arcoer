@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<defs>
+  <radialGradient id="bg" cx="50%" cy="36%" r="82%">
+    <stop offset="0%"  stop-color="#412A6E"/>
+    <stop offset="52%" stop-color="#1B122F"/>
+    <stop offset="100%" stop-color="#090610"/>
+  </radialGradient>
+  <linearGradient id="capg" x1="20%" y1="0%" x2="70%" y2="100%">
+    <stop offset="0%"  stop-color="#FFFDF0"/>
+    <stop offset="45%" stop-color="#FFD678"/>
+    <stop offset="100%" stop-color="#B8860B"/>
+  </linearGradient>
+  <linearGradient id="gem" x1="15%" y1="0%" x2="85%" y2="100%">
+    <stop offset="0%"  stop-color="#F0E4FF"/>
+    <stop offset="42%" stop-color="#A855F7"/>
+    <stop offset="100%" stop-color="#4B1580"/>
+  </linearGradient>
+  <linearGradient id="gold" x1="10%" y1="0%" x2="90%" y2="100%">
+    <stop offset="0%"  stop-color="#FFFDF0"/>
+    <stop offset="45%" stop-color="#5BE7C4"/>
+    <stop offset="100%" stop-color="#0E8F76"/>
+  </linearGradient>
+  <linearGradient id="tA" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%"   stop-color="#A855F7" stop-opacity="0"/>
+    <stop offset="55%"  stop-color="#C9A7FF" stop-opacity=".45"/>
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1"/>
+  </linearGradient>
+  <linearGradient id="tB" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%"   stop-color="#5BE7C4" stop-opacity="0"/>
+    <stop offset="55%"  stop-color="#8FF0DC" stop-opacity=".45"/>
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1"/>
+  </linearGradient>
+  <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="8"/>
+  </filter>
+</defs>
+
+<rect width="512" height="512" fill="url(#bg)"/>
+
+<g transform="translate(256,256)">
+  <!-- The orbit both bodies share -->
+  <circle r="160.0" fill="none" stroke="#C9A7FF" stroke-opacity=".11" stroke-width="1.6"/>
+
+  <!-- Trails, drawn before the cap so they pass behind it -->
+  <path d="M -145.0,67.6 A 160.0,160.0 0 0 1 91.8,-131.1" fill="none" stroke="url(#tA)" stroke-width="15.0"
+        stroke-linecap="round" filter="url(#soft)" opacity=".8"/>
+  <path d="M -145.0,67.6 A 160.0,160.0 0 0 1 91.8,-131.1" fill="none" stroke="url(#tA)" stroke-width="5.0"
+        stroke-linecap="round"/>
+  <path d="M 145.0,-67.6 A 160.0,160.0 0 0 1 -91.8,131.1" fill="none" stroke="url(#tB)" stroke-width="15.0"
+        stroke-linecap="round" filter="url(#soft)" opacity=".75"/>
+  <path d="M 145.0,-67.6 A 160.0,160.0 0 0 1 -91.8,131.1" fill="none" stroke="url(#tB)" stroke-width="5.0"
+        stroke-linecap="round"/>
+
+  <!-- The cap at the centre, the thing being circled -->
+  <circle r="112.0" fill="#FFD678" opacity=".13" filter="url(#soft)"/>
+  <g transform="scale(0.46) translate(-305.5,-306.0)">
+    <path fill-rule="evenodd" d="M 177,292 L 177,363 L 207,368 L 234,375 L 270,388 L 304,405 L 307,405 L 341,388 L 377,375 L 404,368 L 434,363 L 434,292 L 307,337 L 286,331 Z M 517,250 L 308,176 L 94,250 L 133,265 L 133,369 L 112,425 L 121,432 L 135,436 L 151,433 L 162,425 L 142,371 L 143,267 L 308,324 Z" fill="url(#capg)"/>
+  </g>
+
+  <!-- Gem at the head of its trail -->
+  <g transform="translate(91.8,-131.1)">
+    <circle r="46.0" fill="#A855F7" opacity=".38" filter="url(#soft)"/>
+    <path d="M 0,-42.0 L 23.0,-14.0 L 23.0,14.0 L 0,42.0
+             L -23.0,14.0 L -23.0,-14.0 Z"
+          fill="url(#gem)" stroke="#F5EBFF" stroke-width="3.0" stroke-opacity=".9"/>
+    <path d="M 0,-42.0 L 0,42.0" stroke="#FFFFFF" stroke-opacity=".38" stroke-width="1.7"/>
+  </g>
+
+  <!-- Star at the head of its trail -->
+  <g transform="translate(-91.8,131.1)">
+    <circle r="42.0" fill="#5BE7C4" opacity=".4" filter="url(#soft)"/>
+    <path d="M 0.0,-40.0 L 8.5,-8.5 L 40.0,0.0 L 8.5,8.5 L 0.0,40.0 L -8.5,8.5 L -40.0,0.0 L -8.5,-8.5 Z" fill="url(#gold)"
+          stroke="#EAFFF9" stroke-width="2.0" stroke-opacity=".85"/>
+  </g>
+</g>
+</svg>
