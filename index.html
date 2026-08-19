@@ -1,0 +1,3016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14101C">
+<title>Arcoer Nexus</title>
+
+<!-- Home screen install. Without these, adding to the home screen gives
+     a screenshot thumbnail with a browser badge on it; with them it
+     gets a real icon and opens without browser chrome.
+     iOS ignores the manifest for icons and needs apple-touch-icon
+     specifically, which is why both are listed. -->
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Arcoer Nexus">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+:root{
+  /* Grounded in the device's own palette. Plum-black rather than pure
+     black -- it sits next to a purple LED strip in a bedroom, not in a
+     terminal. */
+  --ink:#14101C; --ink-2:#1B1526; --surface:#221A33; --surface-2:#2C2240;
+  --line:#3A2F52;
+  --purple:#9B3DF0; --lilac:#C9A7FF; --amber:#FFB84D; --mint:#5BE7C4;
+  --text:#F2EDFA; --dim:#9A8FB5; --faint:#6B5F86;
+  --r:14px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  background:
+    radial-gradient(1100px 520px at 50% -8%, #2A1B45 0%, transparent 62%),
+    var(--ink);
+  color:var(--text);
+  font-family:"Space Grotesk",system-ui,-apple-system,sans-serif;
+  min-height:100vh; padding:0 0 44px;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:560px;margin:0 auto;padding:0 16px}
+
+/* ── Wider screens ─────────────────────────────────────────────────
+   Phone-first, then let bigger displays actually use the width. CSS
+   columns rather than grid: the cards are different heights, and grid
+   rows would leave ragged gaps under the short ones. `break-inside`
+   keeps each card whole. */
+.cards{columns:1}
+.card{break-inside:avoid}
+
+@media (min-width:740px){          /* iPad portrait, small laptop */
+  .wrap{max-width:720px}
+  .cards{columns:2;column-gap:14px}
+  .strip{max-width:720px}
+  .strip-cap{max-width:720px}
+}
+@media (min-width:1120px){         /* laptop, iPad landscape */
+  .wrap{max-width:1060px}
+  .cards{columns:3;column-gap:14px}
+  .strip{max-width:1060px}
+  .strip-cap{max-width:1060px}
+  /* The emblem gets more room to breathe rather than more size --
+     scaling it up on a big screen just looks stretched. */
+  .emblem{padding:26px 12px 20px}
+
+  /* Sheets get a little wider, but not much -- a 900px-wide list of
+     six options reads worse than a comfortable column, so this caps
+     well short of the viewport. */
+  .sheet{max-width:560px}
+  /* Two columns inside the player window: the transport on the left,
+     the light options on the right, instead of a long scroll. */
+  .pgrid{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start}
+}
+
+/* The elements view is full-bleed, so it benefits most from width: the two
+   collections sit side by side and the rails show more at once. */
+@media (min-width:820px){
+  .synhead{padding:54px 20px 30px}
+  .syntitle{font-size:33px}
+  .rail{padding-left:calc(50vw - 400px);padding-right:calc(50vw - 400px)}
+  .collections{max-width:820px;margin:0 auto}
+  .inscription{font-size:13.5px}
+}
+
+/* ── Signature: the live LED strip ───────────────────────────────── */
+.strip-shell{position:sticky;top:0;z-index:30;padding:10px 16px 12px;
+  background:linear-gradient(180deg,var(--ink) 62%,transparent);
+  backdrop-filter:blur(8px)}
+.strip{display:flex;gap:2px;height:26px;max-width:560px;margin:0 auto;
+  padding:5px;border-radius:9px;background:#0B0812;
+  border:1px solid var(--line);overflow:hidden}
+.led{flex:1;border-radius:2px;background:#151021;transition:background .06s linear}
+.strip-cap{max-width:560px;margin:6px auto 0;display:flex;justify-content:space-between;
+  font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.14em;color:var(--faint)}
+
+/* ── Header ──────────────────────────────────────────────────────── */
+header{padding:6px 0 14px;display:flex;align-items:center;justify-content:flex-end;gap:12px}
+h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.02em}
+h1 span{color:var(--purple)}
+.live{display:flex;align-items:center;gap:7px;font:600 11px/1 "JetBrains Mono",monospace;
+  letter-spacing:.1em;color:var(--dim);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.dot.on{background:var(--mint);box-shadow:0 0 0 4px rgba(91,231,196,.16)}
+.dot.bad{background:var(--amber);box-shadow:0 0 0 4px rgba(255,184,77,.16)}
+
+/* ── Cards ───────────────────────────────────────────────────────── */
+/* ── Liquid glass ──────────────────────────────────────────────────
+   Real translucency plus a backdrop blur, a bright rim along the top
+   edge where light would catch, and a faint sheen sweeping the upper
+   half. The rim is what sells it -- a flat border reads as a box,
+   whereas a gradient edge reads as something with thickness. */
+.card{position:relative;overflow:hidden;
+  background:linear-gradient(165deg,
+      color-mix(in srgb, var(--surface) 72%, transparent),
+      color-mix(in srgb, var(--ink-2) 82%, transparent));
+  backdrop-filter:blur(16px) saturate(1.35);
+  -webkit-backdrop-filter:blur(16px) saturate(1.35);
+  border:1px solid transparent;border-radius:18px;padding:17px;margin-bottom:13px;
+  box-shadow:0 8px 30px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.09);
+  background-clip:padding-box}
+/* Gradient rim: bright at the top, fading round the sides. */
+.card::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;
+  background:linear-gradient(160deg, rgba(255,255,255,.26), rgba(255,255,255,.05) 42%,
+             transparent 70%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+/* Sheen across the upper half, as if light were passing over it. */
+.card::after{content:"";position:absolute;left:-40%;top:-70%;width:180%;height:130%;
+  background:radial-gradient(60% 40% at 50% 50%, rgba(255,255,255,.055), transparent 70%);
+  pointer-events:none}
+
+.sheet{position:relative;overflow:hidden}
+.sheet::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;
+  background:linear-gradient(160deg, rgba(255,255,255,.24), rgba(255,255,255,.04) 45%,
+             transparent 72%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:1}
+.eyebrow{font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.18em;
+  color:var(--faint);margin:0 0 12px}
+
+/* ── Now playing ─────────────────────────────────────────────────── */
+.now{display:flex;gap:15px;align-items:center}
+.disc{width:78px;height:78px;flex:none;border-radius:50%;position:relative;
+  background:conic-gradient(from 0deg,#3A2F52,#191225,#3A2F52,#191225,#3A2F52);
+  display:grid;place-items:center;border:1px solid var(--line)}
+.disc::after{content:"";width:22px;height:22px;border-radius:50%;
+  background:var(--ink);border:1px solid var(--line)}
+.disc.spin{animation:spin 3.4s linear infinite}
+/* Bluetooth gets the same record, with the BT mark on its face rather
+   than album art -- so both modes read as "a disc playing" instead of
+   one being a record and the other a floating icon. */
+.disc.bt{background:
+  radial-gradient(circle at 50% 40%, rgba(79,195,247,.22), transparent 62%),
+  conic-gradient(from 0deg,#243047,#141C2B,#243047,#141C2B,#243047)}
+.disc.bt::after{content:"";width:26px;height:26px;border-radius:50%;
+  background:var(--ink);border:1px solid rgba(79,195,247,.45)}
+.disc .btmark{position:absolute;inset:0;display:none;place-items:center;
+  font-size:27px;color:#4FC3F7;text-shadow:0 0 14px rgba(79,195,247,.85);
+  pointer-events:none}
+.disc.bt .btmark{display:grid}
+/* Counter-rotates so the mark stays upright while the record spins --
+   a tumbling Bluetooth glyph just looks broken. */
+.disc.bt.spin .btmark{animation:spin 3.4s linear infinite reverse}
+/* The VIRTUAL record, drawn rather than an image: it scales, it takes
+   the accent colour, and there is nothing to load. Concentric grooves
+   from a repeating-radial-gradient, a coloured centre label, and the
+   spindle hole punched by .disc::after. */
+.disc.vinyl{background:
+  repeating-radial-gradient(circle at 50% 50%,
+    rgba(255,255,255,.06) 0 1px, rgba(0,0,0,0) 1px 5px),
+  radial-gradient(circle at 50% 50%,
+    var(--purple) 0 26%, #15121F 26.5% 100%),
+  radial-gradient(circle at 34% 30%,
+    rgba(255,255,255,.14) 0%, rgba(255,255,255,0) 55%)}
+/* Album art sits under the disc's spindle, clipped to the circle, so
+   the record still reads as a record rather than a square picture. */
+.disc.art{background-size:cover;background-position:center}
+.disc.art::before{content:"";position:absolute;inset:0;border-radius:50%;
+  background:radial-gradient(circle,transparent 26%,rgba(0,0,0,.34) 27%,transparent 29%,
+             transparent 46%,rgba(0,0,0,.28) 47%,transparent 49%)}
+
+/* Waiting-for-Bluetooth state */
+.waitbox{display:flex;flex-direction:column;align-items:center;text-align:center;
+  padding:22px 12px 12px}
+.pulsering{width:76px;height:76px;border-radius:50%;display:grid;place-items:center;
+  font-size:31px;color:#4FC3F7;border:1px solid rgba(79,195,247,.4);
+  background:radial-gradient(circle,rgba(79,195,247,.18),transparent 70%);
+  animation:pulsering 2.1s ease-out infinite}
+@keyframes pulsering{
+  0%  {box-shadow:0 0 0 0 rgba(79,195,247,.42)}
+  70% {box-shadow:0 0 0 22px rgba(79,195,247,0)}
+  100%{box-shadow:0 0 0 0 rgba(79,195,247,0)}
+}
+@media (prefers-reduced-motion:reduce){.pulsering{animation:none}}
+.waittitle{margin:15px 0 5px;font-size:16px;font-weight:600}
+.waitsub{margin:0;font-size:12.5px;color:var(--dim);line-height:1.6;max-width:250px}
+.waitsub b{color:var(--lilac)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.disc.spin{animation:none}}
+.meta{min-width:0;flex:1}
+.title{font-size:17px;font-weight:700;margin:0 0 3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.artist{font-size:13px;color:var(--dim);margin:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:4px;background:#150F22;border-radius:99px;margin:13px 0 6px;overflow:hidden;width:100%}
+.bar i{display:block;height:100%;width:0;border-radius:99px;
+  background:linear-gradient(90deg,var(--purple),var(--lilac));transition:width .4s linear}
+.times{display:flex;justify-content:space-between;width:100%;
+  font:400 11px/1 "JetBrains Mono",monospace;color:var(--faint)}
+.transport{display:flex;gap:10px;justify-content:center;margin-top:14px;
+  /* margin-BOTTOM was missing, so whatever followed sat straight on the
+     buttons. In the Bluetooth sheet that is the "LIGHTS WHILE THIS
+     PLAYS" heading, which ran into the transport row. */
+  margin-bottom:20px}
+
+/* ── Controls ────────────────────────────────────────────────────── */
+button{font-family:inherit;color:var(--text);cursor:pointer;
+  border:1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background:linear-gradient(168deg,
+      color-mix(in srgb, var(--surface-2) 78%, transparent),
+      color-mix(in srgb, var(--ink-2) 70%, transparent));
+  /* No backdrop-filter here. It was applied to EVERY button, and with
+     fourteen orbs plus option rows and swatches on screen that is
+     dozens of separate blur passes per frame -- the single largest
+     cost on the page. The cards behind them are already frosted, so
+     the buttons lose almost nothing visually. */
+  border-radius:12px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07);
+  transition:border-color .14s,background .14s,transform .1s}
+button:hover{border-color:var(--purple)}
+button:focus-visible{outline:2px solid var(--lilac);outline-offset:2px}
+button:disabled{opacity:.42;cursor:not-allowed}
+.tbtn{width:52px;height:44px;font-size:16px;display:grid;place-items:center}
+.tbtn.main{width:64px;background:var(--purple);border-color:var(--purple);font-size:18px}
+.seg{display:flex;gap:7px}
+/* Mode buttons: icon above the label, so all three read as a set of
+   destinations rather than a row of words. */
+.modeicons button{flex-direction:column;align-items:center;justify-content:center;
+  gap:7px;padding:13px 6px;text-align:center}
+.modeicons svg{width:24px;height:24px;display:block;margin:0 auto}
+.modeicons span{font-size:11.5px}
+.treewrap{display:flex;align-items:center;gap:12px;min-width:0}
+.treemark{width:42px;height:42px;flex:none}
+.bulbmini{width:26px;height:26px;flex:none;color:var(--purple)}
+.dialwrap{position:relative;margin:4px 0 0}
+.dialval{position:absolute;left:0;right:0;bottom:6px;text-align:center;
+  font-size:26px;font-weight:600;color:var(--text)}
+.bulbrow{display:flex;justify-content:space-between;padding:0 18px;
+  font-size:20px;opacity:.45;margin-top:-4px}
+.bulbrow span.on{opacity:1;filter:drop-shadow(0 0 6px var(--purple))}
+.lampseg button{padding:11px 4px;font-size:12px}
+.seg button{flex:1;padding:11px 8px;font-size:13px;font-weight:500}
+.seg button[aria-pressed="true"]{background:var(--purple);border-color:var(--purple)}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chips button{padding:8px 13px;font-size:12.5px;border-radius:99px}
+.chips button[aria-pressed="true"]{background:var(--purple);border-color:var(--purple)}
+.stack{display:flex;flex-direction:column;gap:7px}
+.stack button{padding:11px 13px;text-align:left;font-size:13.5px}
+#logoAnimList button{text-align:center}
+#logoAnimList small{text-align:center}
+.stack button[aria-pressed="true"]{border-color:var(--purple);background:var(--surface-2)}
+.stack small{display:block;color:var(--dim);font-size:11.5px;margin-top:3px;line-height:1.4}
+.stack button[aria-pressed="true"] small{color:var(--lilac)}
+.sub{font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.14em;
+  color:var(--faint);margin:16px 0 9px}
+.sub:first-child{margin-top:0}
+
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:none}
+input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:99px;background:#150F22}
+input[type=range]::-moz-range-track{height:5px;border-radius:99px;background:#150F22}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;
+  border-radius:50%;background:var(--lilac);margin-top:-7.5px;border:2px solid var(--ink)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border:2px solid var(--ink);
+  border-radius:50%;background:var(--lilac)}
+.rowlabel{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+.rowlabel b{font:600 13px/1 "JetBrains Mono",monospace;color:var(--lilac)}
+
+/* ── Tokens: mirrors the physical slots ──────────────────────────── */
+.slots{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.slot{aspect-ratio:1/1.35;border-radius:8px;background:#150F22;border:1px solid var(--line);
+  display:grid;place-items:center;text-align:center;padding:3px;
+  font-size:9.5px;line-height:1.15;color:var(--faint);overflow:hidden}
+.slot.filled{background:linear-gradient(180deg,rgba(155,61,240,.26),rgba(155,61,240,.06));
+  border-color:var(--purple);color:var(--text);font-weight:500}
+.slot.filled.cortis{background:linear-gradient(180deg,rgba(6,182,212,.26),rgba(6,182,212,.06));
+  border-color:#06B6D4}
+.side{font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.14em;
+  color:var(--faint);margin:0 0 7px}
+.side:last-of-type{margin-top:14px}
+
+/* ── Swatches ────────────────────────────────────────────────────── */
+.pal{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
+.sw{aspect-ratio:1;border-radius:10px;border:2px solid transparent;padding:0;
+  position:relative;overflow:hidden}
+.sw[aria-pressed="true"]{border-color:#fff}
+.sw i{position:absolute;inset:auto 4px 4px auto;width:10px;height:10px;border-radius:50%}
+
+/* Wi-Fi, laid out like a phone's network list: signal fan, name,
+   state underneath, then the details as plain rows. */
+/* Mini LED strip used as a live preview in both windows. */
+.demo{display:flex;gap:2px;height:28px;padding:4px;border-radius:8px;
+  background:#0B0812;border:1px solid var(--line);overflow:hidden}
+.demo i{flex:1;border-radius:2px;background:#151021;transition:background .06s linear}
+
+/* Logo window: options left, preview right. Collapses to one column
+   on a narrow phone rather than squeezing both. */
+/* Preview on top, full width and centred; options below it. */
+.lprev-box{display:grid;place-items:center;padding:26px 16px;margin-bottom:10px;
+  background:#0B0812;border:1px solid var(--line);border-radius:14px;min-height:186px}
+.lprev-box svg{display:block;max-width:230px;width:100%;
+  filter:drop-shadow(0 0 20px currentColor)}
+/* Option rows: the choice itself is the wide button, with a separate
+   info target beside it. Two actions in one row, so they need to be
+   genuinely separate hit areas rather than nested. */
+.optlist{display:flex;flex-direction:column;gap:7px}
+.optrow{display:flex;gap:7px}
+.optrow > button:first-child{flex:1;padding:12px 14px;text-align:left;font-size:13.5px}
+.optrow > button:first-child[aria-pressed="true"]{border-color:var(--purple);
+  background:var(--surface-2)}
+.infobtn{flex:none;width:44px;display:grid;place-items:center;font-size:14px;
+  font-weight:600;color:var(--dim)}
+.infobtn:hover{color:var(--lilac)}
+
+.swrow{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.swrow button{width:30px;height:30px;border-radius:50%;padding:0;border:2px solid transparent}
+.swrow button[aria-pressed="true"]{border-color:#fff}
+.swrainbow{background:conic-gradient(#F01B42,#FFB84D,#A8E063,#5BE7C4,#4FC3F7,#9B3DF0,#FF6FA5,#F01B42);
+  color:#fff;font-size:13px;text-shadow:0 1px 3px rgba(0,0,0,.7)}
+.swcustom{width:30px;height:30px;border-radius:50%;overflow:hidden;position:relative;
+  border:2px solid var(--line);cursor:pointer;flex:none}
+.swcustom input{position:absolute;inset:-6px;width:150%;height:150%;
+  border:0;padding:0;background:none;cursor:pointer;
+  backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
+
+/* ── Elements of BTS & CORTIS ──────────────────────────────────────
+   Full-bleed, with a slow aurora behind it. The drifting gradient is
+   the only real "magic" trick here -- everything else is restraint:
+   deep ground, one glow per lit element, generous space. */
+.modal.full{padding:0}
+.fullsheet{max-width:none;width:100%;height:100%;max-height:none;border-radius:0;
+  border:0;padding:0 0 34px;overflow-y:auto;position:relative;
+  background:radial-gradient(900px 520px at 50% -10%, #341F58 0%, transparent 60%), var(--ink)}
+/* Concentric halo rings behind the whole view. Very faint, slowly
+   breathing -- they give the space depth without competing with the
+   collections sitting on top of it. */
+.halos{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.halos i{position:absolute;top:50%;left:50%;border-radius:50%;
+  border:1px solid rgba(255,255,255,.05);transform:translate(-50%,-50%);
+  animation:haloBreathe 9s ease-in-out infinite}
+.halos i:nth-child(1){width:300px;height:300px;animation-delay:0s}
+.halos i:nth-child(2){width:480px;height:480px;animation-delay:1.2s;
+  border-color:rgba(201,167,255,.06)}
+.halos i:nth-child(3){width:680px;height:680px;animation-delay:2.4s}
+.halos i:nth-child(4){width:900px;height:900px;animation-delay:3.6s;
+  border-color:rgba(91,231,196,.05)}
+@keyframes haloBreathe{
+  0%,100%{opacity:.35;transform:translate(-50%,-50%) scale(1)}
+  50%    {opacity:.9; transform:translate(-50%,-50%) scale(1.035)}
+}
+@media (prefers-reduced-motion:reduce){.halos i{animation:none}}
+
+/* Star field. Two layers at different sizes and speeds so it reads as
+   depth rather than a flat sheet of dots. Radial gradients rather than
+   elements: four paint operations instead of a hundred nodes. */
+.starfield{position:absolute;inset:0;pointer-events:none;
+  background-image:
+    radial-gradient(1.4px 1.4px at 18% 12%, rgba(255,255,255,.55), transparent),
+    radial-gradient(1.2px 1.2px at 74% 8%,  rgba(201,167,255,.5), transparent),
+    radial-gradient(1.6px 1.6px at 42% 26%, rgba(255,255,255,.45), transparent),
+    radial-gradient(1.1px 1.1px at 88% 34%, rgba(255,255,255,.4), transparent),
+    radial-gradient(1.5px 1.5px at 8% 44%,  rgba(91,231,196,.4), transparent),
+    radial-gradient(1.2px 1.2px at 62% 52%, rgba(255,255,255,.5), transparent),
+    radial-gradient(1.3px 1.3px at 28% 68%, rgba(255,255,255,.42), transparent),
+    radial-gradient(1.1px 1.1px at 82% 74%, rgba(201,167,255,.45), transparent),
+    radial-gradient(1.6px 1.6px at 52% 88%, rgba(255,255,255,.5), transparent),
+    radial-gradient(1.2px 1.2px at 14% 92%, rgba(255,255,255,.38), transparent),
+    radial-gradient(1.4px 1.4px at 94% 96%, rgba(255,255,255,.4), transparent),
+    radial-gradient(1.1px 1.1px at 36% 4%,  rgba(255,255,255,.35), transparent);
+  animation:twinkleField 5.5s ease-in-out infinite}
+@keyframes twinkleField{
+  0%,100%{opacity:.5}
+  50%    {opacity:1}
+}
+@media (prefers-reduced-motion:reduce){.starfield{animation:none;opacity:.8}}
+
+.aurora{position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background:
+    radial-gradient(520px 300px at 12% 18%, rgba(155,61,240,.34), transparent 62%),
+    radial-gradient(460px 280px at 88% 34%, rgba(6,182,212,.26), transparent 62%),
+    radial-gradient(520px 300px at 50% 88%, rgba(255,111,165,.18), transparent 62%);
+  animation:drift 22s ease-in-out infinite alternate}
+@keyframes drift{to{transform:translate3d(0,-16px,0) scale(1.06)}}
+@media (prefers-reduced-motion:reduce){.aurora{animation:none}}
+
+.synhead{position:relative;text-align:center;padding:46px 20px 26px}
+.syneyebrow{margin:0;font:600 10px/1 "JetBrains Mono",monospace;
+  letter-spacing:.34em;color:var(--lilac);opacity:.75}
+.syntitle{margin:9px 0 0;font-size:27px;font-weight:700;letter-spacing:-.02em;
+  background:linear-gradient(96deg,#fff,var(--lilac),#fff);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.synsub{margin:9px 0 0;font-size:12.5px;color:var(--dim)}
+
+.railcap{position:relative;margin:20px 0 9px;padding:0 20px;
+  font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.2em;color:var(--faint)}
+
+/* Native scroll-snap: real swipe on touch, no gesture library, and it
+   keeps momentum and accessibility for free. */
+.rail{position:relative;display:flex;gap:11px;overflow-x:auto;
+  padding:2px 20px 12px;scroll-snap-type:x mandatory;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none}
+.rail::-webkit-scrollbar{display:none}
+.rail .slot{flex:0 0 116px;height:132px;scroll-snap-align:center;
+  border-radius:16px;background:rgba(255,255,255,.03);
+  border:1px solid var(--line);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:8px;padding:10px;
+  font-size:12.5px;color:var(--faint);text-align:center;
+  transition:transform .18s ease,border-color .18s,box-shadow .28s}
+.rail .slot .num{font:600 9px/1 "JetBrains Mono",monospace;letter-spacing:.14em;
+  color:var(--faint)}
+.rail .slot .glyph{width:34px;height:34px;border-radius:50%;
+  background:#1B1428;border:1px solid var(--line)}
+.rail .slot .who{font-size:13px;font-weight:600;color:var(--text);line-height:1.2}
+.rail .slot.filled{background:rgba(155,61,240,.1);border-color:rgba(155,61,240,.5);
+  box-shadow:0 0 26px rgba(155,61,240,.2)}
+.rail .slot.filled .glyph{background:var(--purple);border-color:transparent;
+  box-shadow:0 0 16px var(--purple)}
+.rail .slot.filled.cortis{background:rgba(6,182,212,.1);border-color:rgba(6,182,212,.5);
+  box-shadow:0 0 26px rgba(6,182,212,.2)}
+.rail .slot.filled.cortis .glyph{background:#06B6D4;box-shadow:0 0 16px #06B6D4}
+.rail .slot:active{transform:scale(.96)}
+
+/* Inscription. Letterspaced, low-contrast, centred -- meant to read
+   as engraving rather than UI copy. The star breathes very slowly;
+   anything faster would look like a loading spinner. */
+.inscription{position:relative;margin:30px auto 4px;max-width:430px;padding:0 24px;
+  text-align:center;font-size:12.5px;line-height:2;letter-spacing:.05em;
+  color:#9A8FB5;font-style:italic}
+.star{display:block;font-style:normal;font-size:15px;color:#FFD678;
+  margin-bottom:9px;text-shadow:0 0 14px rgba(255,214,120,.75);
+  animation:twinkle 4.5s ease-in-out infinite}
+@keyframes twinkle{
+  0%,100%{opacity:.55;transform:scale(1)}
+  50%    {opacity:1;  transform:scale(1.14)}
+}
+@media (prefers-reduced-motion:reduce){.star{animation:none;opacity:1}}
+
+.collections{position:relative;display:grid;gap:16px;padding:26px 20px 0}
+@media (min-width:620px){.collections{grid-template-columns:1fr 1fr}}
+.coll{background:rgba(255,255,255,.025);border:1px solid var(--line);
+  border-radius:16px;padding:15px}
+.collcap{display:flex;align-items:center;gap:8px;margin:0 0 13px;
+  font:600 10px/1 "JetBrains Mono",monospace;letter-spacing:.18em;color:var(--dim)}
+.collcap b{margin-left:auto;color:var(--lilac);font-size:11px}
+.cdot{width:8px;height:8px;border-radius:50%;flex:none}
+.cdot.bts{background:var(--purple);box-shadow:0 0 9px var(--purple)}
+.cdot.cor{background:#06B6D4;box-shadow:0 0 9px #06B6D4}
+/* Orbital layout: the special element sits at the centre with the
+   rest circling it. Positions are set from JS by angle, since the two
+   sets have different counts (7 orbiting and 5) and hard-coding two
+   sets of coordinates would go stale the moment either changed. */
+.orbs{position:relative;width:100%;max-width:280px;aspect-ratio:1;margin:6px auto 2px}
+/* Spokes are generated per group in JS, not a fixed conic gradient:
+   BTS orbits seven members and CORTIS five, so any hardcoded angle
+   would point at nothing for one of them. */
+/* Halo lines. Each is drawn TWICE -- a wide, dim, blurred pass under a
+   thin bright core. That pairing is what makes a line read as glowing;
+   a single stroke, however bright, reads as a bar. */
+.spoke{position:absolute;top:50%;left:50%;transform-origin:0 50%;
+  pointer-events:none;border-radius:2px}
+/* box-shadow rather than filter:blur. A blur filter forces an
+   offscreen render pass per element; a shadow is composited directly.
+   With a dozen of these on screen that difference is visible. */
+.spoke.wide{height:3px;margin-top:-1.5px;
+  background:linear-gradient(90deg, rgba(201,167,255,.5), rgba(201,167,255,.04));
+  box-shadow:0 0 6px rgba(201,167,255,.45)}
+.spoke.core{height:1px;
+  background:linear-gradient(90deg, rgba(255,255,255,.85), rgba(255,255,255,.08))}
+
+/* Almanac lines, same two-pass idea in gold. */
+.almline{position:absolute;top:50%;left:50%;transform-origin:0 50%;
+  pointer-events:none;border-radius:2px}
+.almline.halo-wide{height:3px;margin-top:-1.5px;
+  background:linear-gradient(90deg, rgba(255,214,120,.55), rgba(255,214,120,.04));
+  box-shadow:0 0 8px rgba(255,214,120,.5)}
+.almline.halo-core{height:1px;
+  background:linear-gradient(90deg, rgba(255,245,214,.9), rgba(255,245,214,.06))}
+
+
+.orbs::before{                      /* faint orbit path */
+  content:"";position:absolute;inset:22px;border-radius:50%;
+  border:1px dashed rgba(255,255,255,.07);
+  animation:spin360 46s linear infinite}
+@keyframes spin360{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.orbs::before{animation:none}}
+
+.orb{position:absolute;top:50%;left:50%;display:flex;flex-direction:column;
+  align-items:center;gap:4px;width:56px;margin:-27px 0 0 -28px;
+  cursor:pointer;background:none;border:0;padding:0;
+  /* Clear the global button glass, or each round orb sits on a
+     frosted square. */
+  backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
+.orb.centre{width:70px;margin:-40px 0 0 -35px;z-index:2}
+.orb.centre .ring{width:46px;height:70px;font-size:16px}
+.orb.centre .nm{font-size:10.5px;font-weight:600}
+/* Gem, not a circle -- the same cut silhouette the device's own screen
+   uses, so the two read as one object. clip-path rather than SVG keeps
+   it a single element that can still carry a border-free glow. */
+.orb .ring{width:34px;height:52px;position:relative;
+  display:grid;place-items:center;font-size:11px;font-weight:700;
+  color:var(--faint);
+  clip-path:polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%);
+  background:#150F22;
+  transition:background .25s,filter .3s,color .2s}
+/* Facet lines. A pseudo-element inside the same clip, so the highlights
+   stop at the gem's edge instead of overhanging it. */
+.orb .ring::before{content:"";position:absolute;inset:0;
+  background:
+    linear-gradient(105deg, transparent 46%, rgba(255,255,255,.22) 47%, transparent 48%),
+    linear-gradient(255deg, transparent 46%, rgba(255,255,255,.14) 47%, transparent 48%),
+    linear-gradient(180deg, rgba(255,255,255,.16) 0 28%, transparent 28%);
+  pointer-events:none}
+.orb .nm{font-size:9.5px;color:var(--faint);line-height:1.15;text-align:center;
+  margin-top:1px;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.orb.on .ring{color:#fff}
+.orb.on .nm{color:var(--text)}
+/* A clipped element cannot show a border -- the clip cuts it off -- so
+   lit state is carried by fill and an outer glow via drop-shadow,
+   which follows the clipped silhouette rather than a bounding box. */
+.orb.bts.on .ring{background:linear-gradient(165deg,#C9A7FF,#7B2ECC 60%,#4A1580);
+  filter:drop-shadow(0 0 9px rgba(155,61,240,.85))}
+.orb.cor.on .ring{background:linear-gradient(165deg,#8FF0FF,#0FA8C4 60%,#075B6B);
+  filter:drop-shadow(0 0 9px rgba(6,182,212,.8))}
+/* The two special elements read differently even when dark, so the
+   set always looks like it has a centrepiece. */
+.orb.special .ring{background:#1B1409}
+.orb.special.on .ring{background:linear-gradient(165deg,#FFF0C0,#E8B93A 55%,#8A6410);
+  filter:drop-shadow(0 0 15px rgba(255,214,120,.9))}
+.orb.special .nm{color:#C9B27A}
+
+/* Token header: a big swatch showing its current colour, name beside it. */
+/* Almanac. Gold, distinct from everything else on the page -- it is a
+   reward, so it should not look like another settings row. */
+.almanac-btn{position:relative;display:flex;align-items:center;gap:14px;
+  width:calc(100% - 40px);max-width:420px;margin:22px auto 0;padding:15px 18px;
+  text-align:left;border-radius:14px;
+  background:linear-gradient(150deg,rgba(255,214,120,.16),rgba(255,214,120,.04));
+  border:1px solid rgba(255,214,120,.45)}
+.almanac-btn:hover{border-color:#FFD678}
+.almanac-btn b{display:block;font-size:14.5px;color:#FFF3D0;font-weight:600}
+.almanac-btn small{display:block;font-size:11.5px;color:#C9B27A;margin-top:3px}
+.ab-star{font-size:22px;color:#FFD678;flex:none;
+  text-shadow:0 0 14px rgba(255,214,120,.8)}
+
+/* Almanac book. Drawn in CSS rather than an image: it scales, it takes
+   the accent colour, and it costs nothing to load. The spine dots are
+   the ring binding, which is what makes it read as a book rather than
+   a plain rectangle. */
+.book{position:relative;width:34px;height:42px;flex:none}
+.book .cover{position:absolute;inset:0 0 0 7px;border-radius:3px 5px 5px 3px;
+  background:linear-gradient(150deg,#FFE9A8,#C89A28 60%,#8A6410);
+  box-shadow:0 0 16px rgba(255,214,120,.55), inset -2px 0 0 rgba(0,0,0,.2)}
+.book .pages{position:absolute;inset:4px 3px 4px 9px;border-radius:2px;
+  background:linear-gradient(90deg,#FFF8E4,#E8DCBC);opacity:.9}
+.book .spine{position:absolute;left:0;top:2px;bottom:2px;width:9px;
+  display:flex;flex-direction:column;justify-content:space-around;align-items:center}
+.book .spine i{width:7px;height:7px;border-radius:50%;
+  border:1.5px solid #FFD678;background:transparent}
+.book .mark{position:absolute;right:7px;top:-2px;width:5px;height:16px;
+  background:#E0465C;border-radius:0 0 2px 2px}
+.addrow{display:flex;gap:8px;align-items:center}
+.addrow input{flex:1;min-width:0;padding:11px 12px;border-radius:10px;
+  border:1px solid var(--line);background:rgba(255,255,255,.05);
+  color:var(--text);font-size:14px;font-family:inherit}
+.addrow button{padding:11px 16px;white-space:nowrap}
+.acctrow{display:flex;align-items:center;gap:10px;width:100%}
+.acctrow .nm{flex:1;min-width:0;text-align:left;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.acctrow .del{flex:none;padding:6px 10px;border-radius:8px;font-size:12px;
+  border:1px solid rgba(224,69,60,.5);color:#FFD2D8;background:rgba(90,30,40,.5)}
+.alm-star{margin:2px 0 8px;font-size:30px;color:#FFD678;
+  text-shadow:0 0 20px rgba(255,214,120,.85)}
+
+.elhead{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+.eldot{width:46px;height:46px;border-radius:50%;flex:none;
+  border:1px solid var(--line);background:#2A2A3E;
+  box-shadow:0 0 18px rgba(0,0,0,0)}
+.slot{cursor:pointer}
+.slot:hover{border-color:var(--purple)}
+
+#lockScreen{
+  position:fixed; inset:0; z-index:9999; display:none;
+  align-items:center; justify-content:center; padding:24px;
+  background:#07050d;
+}
+.lockcard{ max-width:340px; text-align:center }
+.lockstar{ font-size:34px; margin:0 0 10px; color:#FFD678 }
+.lockcard h1{ font-size:20px; margin:0 0 14px; color:#fff; letter-spacing:.02em }
+.locksub{ font-size:13px; line-height:1.65; color:#8A82A0; margin:0 }
+.locksub strong{ color:#c8c8d8 }
+.lockreason{ font-size:12px; line-height:1.6; color:#FFD678; margin:18px 0 0 }
+/* Belt and braces: even if a stylesheet loads late, a locked body
+   cannot scroll the real UI into view behind the cover. */
+body.locked{ overflow:hidden }
+
+/* Wallpaper picker: swatches that preview the actual background they
+   apply, rather than a list of names. */
+.wpgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:9px}
+.wpsw{aspect-ratio:1.35;border-radius:11px;border:2px solid transparent;padding:0;
+  position:relative;overflow:hidden}
+.wpsw[aria-pressed="true"]{border-color:#fff}
+.wpsw b{position:absolute;left:0;right:0;bottom:0;padding:4px 5px;font-size:9px;
+  font-weight:600;background:rgba(0,0,0,.45);color:#fff;letter-spacing:.03em}
+.wpdiv{border:0;border-top:1px solid var(--line);margin:22px 0 16px}
+
+.wifirow{display:flex;align-items:center;gap:14px;padding:14px;
+  background:#150F22;border:1px solid var(--line);border-radius:12px}
+.wifirow .fan{flex:none;width:30px;height:30px}
+.wifirow .nm{font-size:15px;font-weight:500;margin:0}
+.wifirow .st{font-size:12px;color:var(--dim);margin:2px 0 0}
+.kv{display:flex;justify-content:space-between;padding:11px 4px;
+  border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
+.kv:last-child{border-bottom:0}
+.kv span:first-child{color:var(--dim)}
+.kv span:last-child{font-family:"JetBrains Mono",monospace;font-size:12.5px}
+
+.status{display:flex;flex-wrap:wrap;gap:7px}
+.pill{display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:99px;
+  background:#150F22;border:1px solid var(--line);
+  font:400 11.5px/1 "JetBrains Mono",monospace;color:var(--dim)}
+.danger{border-color:#7A2E3A;color:#FF8A9B}
+.danger:hover{border-color:#E0465C}
+.foot{text-align:center;color:var(--faint);font-size:11.5px;margin-top:22px;line-height:1.6}
+/* ── Graduation emblem ─────────────────────────────────────────────
+   Not decoration: the artwork is tinted live from whatever the LED
+   strip is currently doing, so it glows along with the device. Tap it
+   to change what the strip is running. */
+.emblem{display:flex;flex-direction:column;align-items:center;gap:0;
+  padding:20px 12px 16px}
+/* The emblem's own card: keep the glass, lose the hard edge, so the
+   three logos sit on one soft plate instead of a defined rectangle. */
+.emblem-card{border:0!important;box-shadow:0 10px 40px rgba(0,0,0,.28)!important}
+.emblem-card::before{opacity:.35}
+.emblem-card::after{
+  background:radial-gradient(70% 55% at 50% 30%, rgba(255,255,255,.07), transparent 72%)}
+/* Each piece is its own button, not one merged block -- so they each
+   need their own hit area, focus ring and pressed state. */
+/* No border, no hover plate -- just the artwork. The press scale and
+   the glow are enough feedback that it's tappable; a box around each
+   logo was reading as part of the graphic rather than as a control. */
+/* Fully transparent. The global button rule now adds a backdrop-filter
+   and an inset highlight for the liquid-glass look, and BOTH have to be
+   cleared here -- a backdrop-filter paints a visible frosted rectangle
+   even with no background set, which is what put a square behind each
+   logo. Resetting border and background alone wasn't enough. */
+.epart{display:flex;align-items:center;justify-content:center;
+  /* Decoration now, not a control: no pointer cursor, no hover, and
+     pointer-events off so it cannot take a tap or a focus ring. */
+  padding:0 14px;border:0;background:none;pointer-events:none;
+  backdrop-filter:none;-webkit-backdrop-filter:none;
+  box-shadow:none;border-radius:0;
+  transition:transform .1s ease,filter .12s ease}
+
+.epart:active{transform:scale(.945)}
+.epart:focus-visible{outline:2px solid var(--lilac);outline-offset:4px;border-radius:10px}
+.epart svg{display:block;filter:drop-shadow(0 0 13px currentColor)}
+/* 168, and the aspect matters: the cap glyph was about 1.6:1 while the
+   gem-and-star mark is 2:1, so at the old 172px it rendered shorter and
+   the stack lost its balance. 168 wide gives 84 tall, close to the 107
+   the cap occupied once its padding is counted. */
+.emblem .e-cap {width:168px; color:var(--lilac)}
+/* Spacing set per piece, not as one flex gap: the hat reads better
+   with air under it, while 2026 should sit close to the logo so the
+   two feel like one lockup. */
+#ePartCap {padding-bottom:14px}
+#ePartYear{padding-top:25px}
+.emblem .e-logo{width:186px; color:var(--purple)}
+.emblem .e-year{width:162px; color:var(--lilac)}
+@media (prefers-reduced-motion:reduce){.epart svg{filter:none}}
+@media (prefers-reduced-motion:reduce){.emblem svg{filter:none}}
+
+/* ── Side drawer ───────────────────────────────────────────────────
+   Slides in from the right. Transform rather than changing `right`,
+   so it's composited by the GPU and stays smooth on a phone. */
+.burger{display:flex;flex-direction:column;justify-content:center;gap:4px;
+  width:38px;height:38px;padding:0 9px;border-radius:10px;flex:none}
+.burger i{display:block;height:2px;border-radius:2px;background:var(--text);
+  transition:background .12s}
+.burger:hover i{background:var(--lilac)}
+
+.scrim{position:fixed;inset:0;z-index:70;background:rgba(6,4,12,.6);
+  opacity:0;pointer-events:none;transition:opacity .22s ease}
+.scrim.open{opacity:1;pointer-events:auto}
+
+.drawer{position:fixed;top:0;right:0;bottom:0;z-index:71;width:264px;max-width:82vw;
+  background:linear-gradient(180deg,var(--surface),var(--ink-2));
+  border-left:1px solid var(--line);padding:18px 16px;
+  transform:translateX(100%);transition:transform .24s cubic-bezier(.3,.8,.3,1);
+  display:flex;flex-direction:column;gap:8px}
+.drawer.open{transform:translateX(0)}
+.drawer h3{margin:2px 0 12px;font:600 10px/1 "JetBrains Mono",monospace;
+  letter-spacing:.18em;color:var(--faint)}
+.drawer button{width:100%;padding:13px 14px;text-align:left;font-size:14px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px}
+.drawer .chev{color:var(--faint)}
+@media (prefers-reduced-motion:reduce){
+  .drawer{transition:none}.scrim{transition:none}
+}
+
+/* Modals. The content lives in the DOM permanently and is just
+   hidden -- building it on open would mean render() has nothing to
+   write into while it's closed, and the slots would show stale data
+   the moment you opened them. */
+.modal{position:fixed;inset:0;z-index:60;display:none;
+  align-items:center;justify-content:center;padding:18px;
+  background:rgba(6,4,12,.78);backdrop-filter:blur(4px)}
+.modal.open{display:flex}
+.sheet{width:100%;max-width:460px;max-height:84vh;overflow-y:auto;
+  background:linear-gradient(168deg,
+      color-mix(in srgb, var(--surface) 82%, transparent),
+      color-mix(in srgb, var(--ink-2) 90%, transparent));
+  /* 10px, not 24. Blur cost scales with radius, and past about 10px on
+     a phone GPU the visual difference is marginal while the frame cost
+     is not. */
+  backdrop-filter:blur(10px) saturate(1.25);
+  -webkit-backdrop-filter:blur(10px) saturate(1.25);
+  border:1px solid transparent;border-radius:20px;padding:20px;
+  box-shadow:0 22px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.1)}
+.sheet h2{margin:0 0 3px;font-size:18px;font-weight:700}
+.sheet .sub2{margin:0 0 16px;font-size:12px;color:var(--dim);line-height:1.5}
+/* Dismiss is an X in the corner now, so the primary action can sit
+   centred and unambiguous instead of competing with a Close button. */
+.sheet{position:relative}
+.xbtn{position:absolute;top:12px;right:12px;width:34px;height:34px;
+  display:grid;place-items:center;border-radius:50%;font-size:15px;
+  line-height:1;color:var(--dim);z-index:2}
+.xbtn:hover{color:var(--text);border-color:var(--purple)}
+.xrow{display:flex;justify-content:center;margin-top:16px;gap:10px;flex-wrap:wrap}
+/* gap was missing entirely. With a single button that never showed --
+   there was nothing to sit beside -- but the lamp sheet puts two in a
+   row and they ran straight into each other. flex-wrap so a narrow
+   phone stacks them rather than squeezing the labels. */
+.xrow button{padding:11px 22px;font-size:13px;white-space:nowrap}
+
+/* Big entry buttons on the home card */
+.bigbtn{width:100%;padding:15px 16px;text-align:left;border-radius:12px;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  font-size:14px;font-weight:500;margin-bottom:9px}
+.bigbtn:last-child{margin-bottom:0}
+/* A bigbtn placed directly after the mode row had no gap above it --
+   .bigbtn only carries margin-BOTTOM, so Element Mode sat flush against
+   the three mode buttons and read as overlapping them. */
+.seg + .bigbtn{margin-top:9px}
+.bigbtn small{display:block;font-weight:400;font-size:11.5px;
+  color:var(--dim);margin-top:3px}
+.bigbtn .chev{color:var(--faint);font-size:15px;flex:none}
+
+/* ── Performance: stop the background when a modal is open ─────────
+   The elements view runs three animated layers (aurora, star field,
+   four breathing halos) and the sheets on top use
+   backdrop-filter:blur(24px). Together that means the phone re-blurs
+   CONTINUOUSLY CHANGING content every frame, which is what made the
+   element window crawl.
+   Freezing the decoration while a sheet is open costs nothing --
+   it is behind a blur, so it cannot be seen moving anyway. */
+body.sheet-open .aurora,
+body.sheet-open .starfield,
+body.sheet-open .halos i{animation-play-state:paused}
+/* Blur is the single most expensive part. Behind an opaque-ish sheet
+   there is nothing to see through it, so drop it entirely rather than
+   paying for it. */
+body.sheet-open .fullsheet{backdrop-filter:none;-webkit-backdrop-filter:none}
+
+.offline .card{opacity:.5;pointer-events:none}
+.offline .card.always{opacity:1;pointer-events:auto}
+</style>
+</head>
+<body class="offline" id="body">
+
+<!-- Signature element: a live mirror of the physical LED strip. Runs
+     the same animations in the browser, driven by the real audio level
+     coming off the device. -->
+<!-- Shown when the page was opened without scanning. Covers
+     everything: the app underneath is never populated, because
+     connect() refuses to subscribe without a key. -->
+<div id="lockScreen">
+  <div class="lockcard">
+    <p class="lockstar">✦</p>
+    <h1>Arcoer Nexus</h1>
+    <p class="locksub">
+      This dashboard is paired to one device.<br><br>
+      Tap <strong>QR</strong> on the Nexus and scan the code to connect.
+      You only need to do this once.
+    </p>
+    <p class="lockreason" id="lockReason" style="display:none"></p>
+  </div>
+</div>
+
+<div class="strip-shell">
+  <div class="strip" id="strip" aria-hidden="true"></div>
+  <div class="strip-cap"><span id="stripMode">STRIP — OFF</span><span id="stripSrc">—</span></div>
+</div>
+
+<div class="wrap">
+
+  <header>
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="live"><span class="dot" id="dot"></span><span id="conn">CONNECTING</span></div>
+      <button class="burger" id="burger" aria-label="Menu" aria-expanded="false">
+        <i></i><i></i><i></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Graduation emblem. Three SEPARATE buttons: each controls a
+       different thing and glows according to what IT controls, so the
+       colour is a readout rather than decoration. -->
+  <section class="card always emblem-card">
+    <div class="emblem">
+      <span class="epart" id="ePartCap">
+        <span class="e-cap"><svg viewBox="0 0 240 120" xmlns="http://www.w3.org/2000/svg"
+             aria-hidden="true">
+          <!-- The cover artwork, verbatim: gem and star with their
+               tapered polyline traces. Replaces the graduation cap.
+
+               EVERY path is currentColor. This span is the cap segment's
+               live preview -- render() tints .e-cap from S.segCap so the
+               emblem shows what those 14 LEDs are ACTUALLY doing.
+
+               The identity colours were hardcoded here at first, which
+               left the mark purple-and-green while the strip behind it
+               was doing something else. A preview showing a fixed colour
+               is not a preview. The traces keep their lower opacity, so
+               they still read as trails rather than flattening into the
+               shapes. -->
+          <path d="M 46.7 5.9 L 44.2 7.6 L 41.7 9.4 L 39.4 11.3 L 37.1 13.4 L 34.9 15.5 L 32.9 17.8 L 31.0 20.1 L 29.2 22.5 L 27.5 25.0 L 25.9 27.6 L 24.5 30.3 L 23.2 33.0 L 22.1 35.7 L 21.1 38.6 L 20.2 41.4 L 19.5 44.3 L 18.9 47.2 L 18.4 50.2 L 18.2 53.1 L 18.0 56.1 L 18.0 59.0 L 18.2 62.0 L 18.5 64.9 L 18.9 67.8 L 19.5 70.6 L 20.2 73.5 L 21.1 76.3 L 22.0 79.0 L 23.2 81.7 L 24.4 84.3 L 25.8 86.8 L 27.3 89.3 L 28.9 91.7 L 30.6 93.9 L 32.5 96.1 L 34.4 98.2 L 36.4 100.2 L 38.5 102.1 L 40.8 103.9 L 43.0 105.6 L 45.4 107.1 L 47.8 108.5 L 50.3 109.8 L 52.9 110.9 L 55.5 111.9 L 58.1 112.8 L 60.8 113.5 L 63.5 114.1 L 63.5 114.1 L 60.9 113.1 L 58.4 112.0 L 56.0 110.8 L 53.6 109.5 L 51.3 108.1 L 49.0 106.6 L 46.9 105.0 L 44.8 103.3 L 42.8 101.5 L 40.9 99.6 L 39.1 97.7 L 37.4 95.6 L 35.8 93.5 L 34.3 91.3 L 33.0 89.0 L 31.7 86.7 L 30.6 84.4 L 29.6 81.9 L 28.7 79.5 L 27.9 77.0 L 27.2 74.5 L 26.7 72.0 L 26.3 69.4 L 26.1 66.8 L 25.9 64.3 L 25.9 61.7 L 26.0 59.1 L 26.2 56.6 L 26.6 54.1 L 27.0 51.6 L 27.6 49.1 L 28.4 46.7 L 29.2 44.3 L 30.1 42.0 L 31.2 39.7 L 32.3 37.5 L 33.6 35.3 L 35.0 33.2 L 36.4 31.2 L 38.0 29.3 L 39.6 27.4 L 41.4 25.7 L 43.2 24.0 L 45.1 22.4 L 47.0 21.0 L 49.0 19.6 L 51.1 18.3 A 6.5 6.5 0 0 0 46.7 5.9 Z" fill="currentColor"/>
+          <path d="M 193.2 114.1 L 195.8 112.4 L 198.3 110.6 L 200.6 108.7 L 202.9 106.6 L 205.1 104.5 L 207.1 102.2 L 209.0 99.9 L 210.8 97.5 L 212.5 95.0 L 214.1 92.4 L 215.5 89.7 L 216.8 87.0 L 217.9 84.3 L 218.9 81.4 L 219.8 78.6 L 220.5 75.7 L 221.1 72.8 L 221.6 69.8 L 221.8 66.9 L 222.0 63.9 L 222.0 61.0 L 221.8 58.0 L 221.5 55.1 L 221.1 52.2 L 220.5 49.4 L 219.8 46.5 L 218.9 43.7 L 218.0 41.0 L 216.8 38.3 L 215.6 35.7 L 214.2 33.2 L 212.7 30.7 L 211.1 28.3 L 209.4 26.1 L 207.5 23.9 L 205.6 21.8 L 203.6 19.8 L 201.5 17.9 L 199.2 16.1 L 197.0 14.4 L 194.6 12.9 L 192.2 11.5 L 189.7 10.2 L 187.1 9.1 L 184.5 8.1 L 181.9 7.2 L 179.2 6.5 L 176.5 5.9 L 176.5 5.9 L 179.1 6.9 L 181.6 8.0 L 184.0 9.2 L 186.4 10.5 L 188.7 11.9 L 191.0 13.4 L 193.1 15.0 L 195.2 16.7 L 197.2 18.5 L 199.1 20.4 L 200.9 22.3 L 202.6 24.4 L 204.2 26.5 L 205.7 28.7 L 207.0 31.0 L 208.3 33.3 L 209.4 35.6 L 210.4 38.1 L 211.3 40.5 L 212.1 43.0 L 212.8 45.5 L 213.3 48.0 L 213.7 50.6 L 213.9 53.2 L 214.1 55.7 L 214.1 58.3 L 214.0 60.9 L 213.8 63.4 L 213.4 65.9 L 213.0 68.4 L 212.4 70.9 L 211.6 73.3 L 210.8 75.7 L 209.9 78.0 L 208.8 80.3 L 207.7 82.5 L 206.4 84.7 L 205.0 86.8 L 203.6 88.8 L 202.0 90.7 L 200.4 92.6 L 198.6 94.3 L 196.8 96.0 L 194.9 97.6 L 193.0 99.0 L 191.0 100.4 L 188.9 101.7 A 6.5 6.5 0 0 0 193.2 114.1 Z" fill="currentColor"/>
+          <g transform="translate(78 60) scale(4.2)">
+          <path d="M 0 -11 L 7 -4 L 7 4 L 0 11 L -7 4 L -7 -4 Z" fill="currentColor"/>
+          </g>
+          <g transform="translate(162 60) scale(4.2)">
+          <path d="M 0 -11 L 3.5 -3.5 L 11 0 L 3.5 3.5 L 0 11
+          L -3.5 3.5 L -11 0 L -3.5 -3.5 Z" fill="currentColor"/>
+          </g>
+        </svg></span>
+      </span>
+      <span class="epart" id="ePartLogo">
+        <span class="e-logo"><svg viewBox="0 0 800 254" xmlns="http://www.w3.org/2000/svg"><path fill="none" opacity="1.000000" stroke="none" d=" M801.000000,140.000000 C801.000000,178.259323 801.000000,216.518631 801.000000,255.000000 C763.979431,255.000000 726.958374,255.000000 689.644653,254.641235 C731.411255,247.909485 763.181519,226.516663 785.250671,189.155151 C782.326233,189.155151 780.507324,189.155151 778.688416,189.155151 C728.693481,189.155151 678.694336,188.772339 628.705261,189.314514 C603.211426,189.591019 579.033875,185.597778 556.274170,173.252228 C555.780212,173.272903 555.504272,173.386658 555.228394,173.500397 C555.444641,173.705322 555.660889,173.910248 555.904785,174.484039 C571.106079,211.837631 597.688904,236.627335 635.654175,249.068588 C642.965576,251.464508 650.544495,253.043930 658.000000,255.000000 C577.645752,255.000000 497.291534,255.000000 416.657562,254.644302 C458.475525,248.019470 490.244873,226.566025 512.478882,189.154999 C509.720917,189.154999 507.963715,189.155823 506.206512,189.154877 C451.262787,189.125198 396.318726,189.192627 341.375519,189.008057 C324.188049,188.950333 307.836334,184.664444 292.242462,177.489944 C289.201355,176.090775 286.204742,174.594864 282.419830,172.774277 C283.084900,174.654648 283.356171,175.584167 283.734497,176.467865 C299.622101,213.576385 326.889648,238.078094 365.451324,249.909729 C372.187347,251.976517 379.144806,253.321594 386.000000,255.000000 C304.645782,255.000000 223.291550,255.000000 141.649918,254.636322 C202.625748,247.056229 249.214645,200.576965 254.535721,139.103897 C259.967133,76.356201 220.489838,22.734926 163.530136,6.104288 C156.152267,3.950158 148.516373,2.679757 141.000000,1.000000 C223.020889,1.000000 305.041779,1.000000 387.336365,1.354035 C344.402679,7.036304 312.255768,28.934460 289.430817,66.845016 C292.334198,66.845016 294.113586,66.845001 295.892975,66.845009 C348.532990,66.845070 401.173279,66.943497 453.812775,66.777214 C467.255707,66.734756 480.458099,68.151115 493.211090,72.187187 C501.971863,74.959801 510.362793,78.901016 519.258606,82.455551 C518.876160,81.301750 518.617371,80.222359 518.173706,79.225212 C501.249908,41.185772 472.983948,16.169537 432.710480,5.082989 C426.564728,3.391176 420.241272,2.344866 414.000000,1.000001 C496.020905,1.000000 578.041809,1.000000 660.327148,1.352545 C617.324280,6.920029 585.207153,28.895645 562.197571,66.845032 C565.147705,66.845032 566.908813,66.845032 568.669983,66.845032 C621.326355,66.845078 673.982849,66.897446 726.639099,66.810310 C740.732910,66.786995 754.584412,68.299324 767.932739,72.853004 C776.034851,75.616982 783.883423,79.123985 792.031311,82.371094 C791.878784,81.793770 791.775757,81.010666 791.473083,80.314400 C774.710449,41.754055 746.316101,16.411470 705.688660,5.112730 C699.552429,3.406225 693.234070,2.354570 687.000000,1.000000 C724.927612,1.000000 762.855164,1.000000 801.000000,1.000000 C801.000000,39.353954 801.000000,77.708321 800.638733,116.336006 C799.139709,109.454147 798.001953,102.298958 796.899780,95.367859 C758.481995,95.367859 720.935547,95.367859 683.371704,95.367859 C683.371704,117.325890 683.371704,138.915466 683.371704,160.751602 C721.167358,160.751602 758.724670,160.751602 796.474487,160.751602 C796.703369,159.782791 796.901245,159.002655 797.071167,158.216476 C798.383850,152.145004 799.691101,146.072311 801.000000,140.000000 M361.500000,95.001076 C333.867889,95.001076 306.235748,95.001076 278.729095,95.001076 C272.470795,113.890198 272.471100,142.310776 278.664185,160.809082 C360.192474,160.809082 441.778900,160.809082 523.589172,160.809082 C529.419067,138.866379 529.414246,117.113251 523.566650,95.001076 C469.745972,95.001076 416.122986,95.001076 361.500000,95.001076 M643.499878,95.001190 C612.734558,95.001190 581.969238,95.001190 551.192505,95.001190 C545.444092,117.239639 545.419128,139.012421 551.128296,160.619080 C589.084717,160.619080 626.605713,160.619080 664.087402,160.619080 C664.087402,138.650803 664.087402,117.063118 664.087402,95.001190 C657.405029,95.001190 650.952332,95.001190 643.499878,95.001190 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M140.531342,1.000000 C148.516373,2.679757 156.152267,3.950158 163.530136,6.104288 C220.489838,22.734926 259.967133,76.356201 254.535721,139.103897 C249.214645,200.576965 202.625748,247.056229 141.181259,254.636322 C132.312439,255.000000 123.624870,255.000000 114.295242,254.639191 C113.167122,254.176743 112.685417,254.041260 112.194412,253.978256 C57.880287,247.009109 14.779945,206.996506 3.777483,153.350006 C2.929897,149.217285 1.929415,145.115936 1.000000,141.000000 C1.000000,138.958328 1.000000,136.916672 1.323420,134.168335 C1.431227,128.307770 1.215613,123.153885 1.000000,118.000000 C1.000000,116.611107 1.000000,115.222221 1.356643,113.250259 C1.822878,112.183022 1.960875,111.703339 2.038034,111.214058 C10.723581,56.137737 48.325924,15.744250 102.170212,3.655159 C106.113419,2.769835 110.056732,1.885040 114.000000,1.000000 C122.687569,1.000000 131.375137,1.000000 140.531342,1.000000 M153.554321,148.994293 C154.332687,147.918015 155.172119,146.880310 155.880096,145.759552 C164.438919,132.210602 162.259460,115.329529 150.493851,103.885017 C139.773941,93.457672 122.264488,92.085587 109.564819,100.677711 C96.760590,109.340584 91.970650,125.733818 97.682373,140.408859 C105.907188,161.540771 135.339966,169.241043 153.554321,148.994293 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M386.468658,255.000000 C379.144806,253.321594 372.187347,251.976517 365.451324,249.909729 C326.889648,238.078094 299.622101,213.576385 283.734497,176.467865 C283.356171,175.584167 283.084900,174.654648 282.419830,172.774277 C286.204742,174.594864 289.201355,176.090775 292.242462,177.489944 C307.836334,184.664444 324.188049,188.950333 341.375519,189.008057 C396.318726,189.192627 451.262787,189.125198 506.206512,189.154877 C507.963715,189.155823 509.720917,189.154999 512.478882,189.154999 C490.244873,226.566025 458.475525,248.019470 416.188904,254.644302 C406.312439,255.000000 396.624878,255.000000 386.468658,255.000000 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M658.468628,255.000000 C650.544495,253.043930 642.965576,251.464508 635.654175,249.068588 C597.688904,236.627335 571.106079,211.837631 556.071899,174.302185 C556.211304,173.751480 556.492188,173.345306 556.492188,173.345306 C579.033875,185.597778 603.211426,189.591019 628.705261,189.314514 C678.694336,188.772339 728.693481,189.155151 778.688416,189.155151 C780.507324,189.155151 782.326233,189.155151 785.250671,189.155151 C763.181519,226.516663 731.411255,247.909485 689.175964,254.641235 C678.979126,255.000000 668.958191,255.000000 658.468628,255.000000 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M413.531342,1.000001 C420.241272,2.344866 426.564728,3.391176 432.710480,5.082989 C472.983948,16.169537 501.249908,41.185772 518.173706,79.225212 C518.617371,80.222359 518.876160,81.301750 519.258606,82.455551 C510.362793,78.901016 501.971863,74.959801 493.211090,72.187187 C480.458099,68.151115 467.255707,66.734756 453.812775,66.777214 C401.173279,66.943497 348.532990,66.845070 295.892975,66.845009 C294.113586,66.845001 292.334198,66.845016 289.430817,66.845016 C312.255768,28.934460 344.402679,7.036304 387.805054,1.354035 C396.354218,1.000000 404.708466,1.000000 413.531342,1.000001 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M686.531372,1.000000 C693.234070,2.354570 699.552429,3.406225 705.688660,5.112730 C746.316101,16.411470 774.710449,41.754055 791.473083,80.314400 C791.775757,81.010666 791.878784,81.793770 792.031311,82.371094 C783.883423,79.123985 776.034851,75.616982 767.932739,72.853004 C754.584412,68.299324 740.732910,66.786995 726.639099,66.810310 C673.982849,66.897446 621.326355,66.845078 568.669983,66.845032 C566.908813,66.845032 565.147705,66.845032 562.197571,66.845032 C585.207153,28.895645 617.324280,6.920029 660.795776,1.352545 C669.354248,1.000000 677.708496,1.000000 686.531372,1.000000 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M801.000000,139.562500 C799.691101,146.072311 798.383850,152.145004 797.071167,158.216476 C796.901245,159.002655 796.703369,159.782791 796.474487,160.751602 C758.724670,160.751602 721.167358,160.751602 683.371704,160.751602 C683.371704,138.915466 683.371704,117.325890 683.371704,95.367859 C720.935547,95.367859 758.481995,95.367859 796.899780,95.367859 C798.001953,102.298958 799.139709,109.454147 800.638733,116.804665 C801.000000,119.041664 801.000000,121.083336 800.687622,123.812843 C800.583435,127.333794 800.791748,130.166901 801.000000,133.000000 C801.000000,135.041672 801.000000,137.083328 801.000000,139.562500 z"/> <path fill="none" opacity="1.000000" stroke="none" d=" M1.000000,141.468658 C1.929415,145.115936 2.929897,149.217285 3.777483,153.350006 C14.779945,206.996506 57.880287,247.009109 112.194412,253.978256 C112.685417,254.041260 113.167122,254.176743 113.826584,254.639191 C76.406059,255.000000 38.812115,255.000000 1.000000,255.000000 C1.000000,217.312714 1.000000,179.625015 1.000000,141.468658 z"/> <path fill="none" opacity="1.000000" stroke="none" d=" M113.531342,1.000000 C110.056732,1.885040 106.113419,2.769835 102.170212,3.655159 C48.325924,15.744250 10.723581,56.137737 2.038034,111.214058 C1.960875,111.703339 1.822878,112.183022 1.356643,112.833595 C1.000000,75.739388 1.000000,38.478779 1.000000,1.000000 C38.353943,1.000000 75.708313,1.000000 113.531342,1.000000 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M1.000000,118.466858 C1.215613,123.153885 1.431227,128.307770 1.323420,133.730835 C1.000000,128.977905 1.000000,123.955818 1.000000,118.466858 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M801.000000,132.550018 C800.791748,130.166901 800.583435,127.333794 800.687622,124.250343 C801.000000,126.700012 801.000000,129.400024 801.000000,132.550018 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M362.000000,95.001076 C416.122986,95.001076 469.745972,95.001076 523.566650,95.001076 C529.414246,117.113251 529.419067,138.866379 523.589172,160.809082 C441.778900,160.809082 360.192474,160.809082 278.664185,160.809082 C272.471100,142.310776 272.470795,113.890198 278.729095,95.001076 C306.235748,95.001076 333.867889,95.001076 362.000000,95.001076 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M643.999756,95.001190 C650.952332,95.001190 657.405029,95.001190 664.087402,95.001190 C664.087402,117.063118 664.087402,138.650803 664.087402,160.619080 C626.605713,160.619080 589.084717,160.619080 551.128296,160.619080 C545.419128,139.012421 545.444092,117.239639 551.192505,95.001190 C581.969238,95.001190 612.734558,95.001190 643.999756,95.001190 z"/> <path fill="currentColor" opacity="1.000000" stroke="none" d=" M556.044189,173.933319 C555.660889,173.910248 555.444641,173.705322 555.228394,173.500397 C555.504272,173.386658 555.780212,173.272903 556.274170,173.252228 C556.492188,173.345306 556.211304,173.751480 556.044189,173.933319 z"/> <path fill="none" opacity="1.000000" stroke="none" d=" M153.306396,149.255096 C135.339966,169.241043 105.907188,161.540771 97.682373,140.408859 C91.970650,125.733818 96.760590,109.340584 109.564819,100.677711 C122.264488,92.085587 139.773941,93.457672 150.493851,103.885017 C162.259460,115.329529 164.438919,132.210602 155.880096,145.759552 C155.172119,146.880310 154.332687,147.918015 153.306396,149.255096 z"/></svg></span>
+      </span>
+      <span class="epart" id="ePartYear">
+        <span class="e-year"><svg viewBox="122 158 686 238" xmlns="http://www.w3.org/2000/svg"><clipPath id="p.0"><path d="m0 0l960.0 0l0 720.0l-960.0 0l0 -720.0z" clip-rule="nonzero"/></clipPath><g clip-path="url(#p.0)"><path fill="currentColor" fill-opacity="0.0" d="m0 0l960.0 0l0 720.0l-960.0 0z" fill-rule="evenodd"/><path fill="currentColor" fill-opacity="0.0" d="m98.57218 106.49344l773.8267 0l0 342.58267l-773.8267 0z" fill-rule="evenodd"/><path fill="currentColor" d="m287.88467 218.54031q0 13.734375 -6.0625 26.40625q-6.046875 12.671875 -16.4375 24.984375q-10.390625 12.296875 -24.515625 25.078125q-14.125 12.765625 -30.421875 26.9375q-7.375 6.328125 -12.453125 11.265625q-5.0625 4.921875 -8.640625 9.40625q-3.578125 4.46875 -6.25 8.671875q-2.671875 4.203125 -3.328125 3.609375q15.046875 -1.8125 35.59375 -9.828125q20.5625 -8.015625 38.484375 -23.71875q3.984375 4.96875 5.765625 8.09375q1.78125 3.125 3.078125 7.015625q1.3125 3.890625 2.3125 8.359375q1.0 4.453125 1.0 8.921875q0 7.828125 -3.75 13.953125q-3.65625 4.046875 -9.328125 5.875q-5.65625 1.84375 -12.609375 2.671875q-6.9375 0.828125 -14.796875 1.109375q-7.859375 0.28125 -16.203125 0.28125q-7.890625 0 -15.765625 0.390625q-7.875 0.390625 -14.953125 1.28125q-7.078125 0.90625 -12.828125 2.609375q-5.75 1.71875 -11.40625 5.96875q-9.40625 -4.328125 -15.203125 -10.71875q-5.796875 -6.375 -8.53125 -14.921875q1.96875 -9.5 6.265625 -16.671875q4.296875 -7.171875 11.328125 -14.609375q7.046875 -7.453125 17.265625 -15.9375q10.234375 -8.484375 24.109375 -19.953125q15.421875 -12.75 27.8125 -23.828125q12.390625 -11.078125 20.78125 -21.015625q8.390625 -9.953125 12.75 -19.28125q4.359375 -9.328125 4.359375 -18.796875q0 -11.484375 -5.53125 -17.65625q-5.515625 -6.1875 -14.578125 -6.1875q-6.75 0 -13.171875 3.203125q-6.40625 3.1875 -11.515625 8.90625q-5.09375 5.71875 -8.265625 13.15625q-3.15625 7.421875 -3.15625 15.640625q0 5.890625 1.734375 10.4375q1.75 4.53125 9.8125 14.59375q-10.71875 2.328125 -14.375 2.328125q-7.203125 0 -13.28125 -2.421875q-6.078125 -2.4375 -10.546875 -6.75q-4.46875 -4.328125 -6.9375 -10.171875q-2.453125 -5.84375 -2.453125 -12.8125q0 -11.359375 6.40625 -21.390625q6.40625 -10.046875 16.5625 -17.390625q10.171875 -7.359375 22.921875 -11.703125q12.765625 -4.34375 25.984375 -4.34375q11.65625 0 21.46875 3.46875q9.8125 3.46875 16.84375 10.078125q7.046875 6.59375 10.84375 15.65625q3.8125 9.046875 3.8125 19.75zm61.6597 162.54688q-10.546875 -2.03125 -19.328125 -6.203125q-8.765625 -4.171875 -15.046875 -11.625q-6.28125 -7.453125 -9.84375 -18.140625q-3.5625 -10.703125 -3.5625 -25.78125q0 -16.796875 4.65625 -34.59375q4.65625 -17.796875 12.953125 -34.5625q8.3125 -16.765625 19.640625 -31.890625q11.328125 -15.140625 24.796875 -26.546875q13.46875 -11.40625 28.671875 -18.25q15.203125 -6.84375 31.03125 -6.84375q12.203125 0 21.203125 4.578125q9.015625 4.578125 15.0 12.640625q6.0 8.046875 8.84375 18.96875q2.84375 10.90625 2.84375 23.4375q0 16.1875 -3.96875 33.953125q-3.953125 17.75 -11.3125 34.640625q-7.359375 16.890625 -17.890625 32.34375q-10.515625 15.4375 -24.015625 27.28125q-13.5 11.84375 -29.640625 19.078125q-16.140625 7.234375 -35.03125 7.515625zm-6.140625 -50.8125q0 16.59375 5.40625 22.90625q5.421875 6.3125 15.765625 8.125q10.203125 -0.46875 20.234375 -8.390625q10.046875 -7.921875 18.828125 -20.703125q8.78125 -12.78125 15.984375 -28.640625q7.203125 -15.859375 12.1875 -31.609375q4.984375 -15.765625 7.59375 -29.71875q2.609375 -13.953125 2.609375 -22.90625q0 -13.921875 -2.828125 -21.734375q-2.8125 -7.8125 -7.625 -8.96875q-10.5 1.359375 -21.46875 9.046875q-10.953125 7.6875 -20.921875 19.59375q-9.953125 11.890625 -18.328125 26.9375q-8.359375 15.046875 -14.515625 30.515625q-6.15625 15.46875 -9.546875 30.015625q-3.375 14.53125 -3.375 25.53125zm283.79114 -111.734375q0 13.734375 -6.0625 26.40625q-6.046875 12.671875 -16.4375 24.984375q-10.390625 12.296875 -24.515625 25.078125q-14.125 12.765625 -30.421875 26.9375q-7.375 6.328125 -12.453125 11.265625q-5.0625 4.921875 -8.640625 9.40625q-3.578125 4.46875 -6.25 8.671875q-2.671875 4.203125 -3.328125 3.609375q15.046875 -1.8125 35.59375 -9.828125q20.5625 -8.015625 38.484375 -23.71875q3.984375 4.96875 5.765625 8.09375q1.78125 3.125 3.078125 7.015625q1.3125 3.890625 2.3125 8.359375q1.0 4.453125 1.0 8.921875q0 7.828125 -3.75 13.953125q-3.65625 4.046875 -9.328125 5.875q-5.65625 1.84375 -12.609375 2.671875q-6.9375 0.828125 -14.796875 1.109375q-7.859375 0.28125 -16.203125 0.28125q-7.890625 0 -15.765625 0.390625q-7.875 0.390625 -14.953125 1.28125q-7.0781555 0.90625 -12.8281555 2.609375q-5.75 1.71875 -11.40625 5.96875q-9.40625 -4.328125 -15.203125 -10.71875q-5.796875 -6.375 -8.53125 -14.921875q1.96875 -9.5 6.265625 -16.671875q4.296875 -7.171875 11.328125 -14.609375q7.046875 -7.453125 17.265625 -15.9375q10.2344055 -8.484375 24.109406 -19.953125q15.421875 -12.75 27.8125 -23.828125q12.390625 -11.078125 20.78125 -21.015625q8.390625 -9.953125 12.75 -19.28125q4.359375 -9.328125 4.359375 -18.796875q0 -11.484375 -5.53125 -17.65625q-5.515625 -6.1875 -14.578125 -6.1875q-6.75 0 -13.171875 3.203125q-6.40625 3.1875 -11.515625 8.90625q-5.09375 5.71875 -8.265625 13.15625q-3.15625 7.421875 -3.15625 15.640625q0 5.890625 1.734375 10.4375q1.75 4.53125 9.8125 14.59375q-10.71875 2.328125 -14.375 2.328125q-7.203125 0 -13.28125 -2.421875q-6.078125 -2.4375 -10.5469055 -6.75q-4.46875 -4.328125 -6.9375 -10.171875q-2.453125 -5.84375 -2.453125 -12.8125q0 -11.359375 6.40625 -21.390625q6.4062805 -10.046875 16.56253 -17.390625q10.171875 -7.359375 22.921875 -11.703125q12.765625 -4.34375 25.984375 -4.34375q11.65625 0 21.46875 3.46875q9.8125 3.46875 16.84375 10.078125q7.046875 6.59375 10.84375 15.65625q3.8125 9.046875 3.8125 19.75zm128.5503 -50.546875q4.390625 0 9.703125 2.078125q5.3125 2.0625 10.796875 5.296875q5.5 3.234375 10.484375 7.375q5.0 4.125 12.34375 14.140625q-15.5 2.203125 -29.28125 9.296875q-13.78125 7.078125 -28.703125 18.71875q-14.90625 11.640625 -28.890625 26.9375q-13.96875 15.28125 -26.96875 30.4375q3.546875 -9.71875 10.9375 -15.875q7.40625 -6.15625 15.0 -11.0q7.609375 -4.84375 15.453125 -7.96875q7.859375 -3.140625 16.34375 -3.484375q6.96875 3.640625 12.890625 8.578125q5.921875 4.9375 10.734375 10.75q4.828125 5.796875 8.078125 12.59375q3.25 6.796875 3.25 13.875q0 8.890625 -4.671875 19.359375q-4.671875 10.453125 -12.09375 20.765625q-7.421875 10.3125 -16.984375 19.859375q-9.546875 9.546875 -19.578125 17.109375q-10.03125 7.5625 -20.25 12.234375q-10.203125 4.6875 -19.0 4.6875q-22.25 -4.5625 -36.59375 -16.734375q-14.34375 -12.171875 -14.34375 -32.75q0 -16.09375 5.34375 -33.375q5.359375 -17.296875 14.328125 -34.140625q8.96875 -16.859375 20.890625 -32.703125q11.9375 -15.859375 25.359375 -28.890625q13.4375 -13.046875 27.421875 -22.765625q14.0 -9.734375 28.0 -14.40625zm-14.90625 97.265625q-14.0625 4.53125 -27.203125 13.171875q-13.140625 8.625 -22.5 19.0q-9.34375 10.359375 -14.484375 21.390625q-5.140625 11.03125 -5.140625 21.046875q0 3.359375 1.15625 7.0625q1.15625 3.6875 3.265625 6.984375q2.125 3.296875 4.78125 5.859375q2.671875 2.546875 3.65625 2.84375q8.65625 -4.109375 19.890625 -14.1875q11.25 -10.078125 20.734375 -22.171875q9.5 -12.09375 15.578125 -24.390625q6.09375 -12.296875 6.09375 -21.734375q0 -4.53125 -1.75 -8.90625q-1.75 -4.375 -4.078125 -5.96875z" fill-rule="nonzero"/></g></svg></span>
+      </span>
+    </div>
+  </section>
+
+  <!-- Mode. Each opens the player window for that mode. -->
+  <div class="cards">
+  <section class="card">
+    <p class="eyebrow">MODE</p>
+    <div class="seg modeicons" id="modeSeg">
+      <button data-mode="home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 10.2 12 3l9 7.2"/><path d="M5.4 9v11h13.2V9"/>
+          <path d="M9.6 20v-6.2h4.8V20"/>
+        </svg><span>Home</span>
+      </button>
+      <button data-mode="bt">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7 7.5 17 16.5 12 21V3l5 4.5L7 16.5"/>
+        </svg><span>Bluetooth</span>
+      </button>
+      <button data-mode="vinyl">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+             aria-hidden="true">
+          <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.2"/>
+          <circle cx="12" cy="12" r="1.1" fill="currentColor"/>
+        </svg><span>Vinyl</span>
+      </button>
+    </div>
+    <button class="bigbtn" id="openElemMode">
+      <span>Element Mode<small id="elemModeNow">All on</small></span>
+      <span class="chev">›</span>
+    </button>
+  </section>
+
+  <!-- Name tag: its own row between the modes and the rest. -->
+  <section class="card">
+    <p class="eyebrow">NAME TAG</p>
+    <div class="seg lampseg">
+      <button id="nameSpinBtn">Spin<b id="nameNow"></b></button>
+      <button id="nameDirBtn" title="Which way the tag turns">&#8635;</button>
+    </div>
+  </section>
+
+  <!-- Lamp -->
+  <section class="card">
+    <p class="eyebrow">LAMP</p>
+    <button class="bigbtn" id="openLamp">
+      <span class="treewrap">
+        <svg class="bulbmini" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="10" r="5"/><path d="M9.5 18h5M10 20.5h4"/>
+        </svg>
+        <span>Lamp<small id="lampNow">Off</small></span>
+      </span>
+      <span class="chev">›</span>
+    </button>
+  </section>
+
+  <!-- Tokens -->
+  <section class="card">
+    <p class="eyebrow">ELEMENTS</p>
+    <button class="bigbtn" id="openSynergy">
+      <span class="treewrap">
+        <!-- The same mark as the screen: gem and star on one diagonal,
+             each with a short tail behind it. Static, like the device. -->
+        <svg class="treemark" viewBox="0 0 46 46" fill="none" aria-hidden="true">
+          <path d="M11 33 A16 16 0 0 1 13 25" stroke="#A855F7" stroke-width="2.6"
+                stroke-linecap="round" opacity=".55"/>
+          <path d="M14 22 A16 16 0 0 1 18 17" stroke="#A855F7" stroke-width="2.6"
+                stroke-linecap="round" opacity=".3"/>
+          <path d="M35 13 A16 16 0 0 1 33 21" stroke="#5BE7C4" stroke-width="2.6"
+                stroke-linecap="round" opacity=".55"/>
+          <path d="M32 24 A16 16 0 0 1 28 29" stroke="#5BE7C4" stroke-width="2.6"
+                stroke-linecap="round" opacity=".3"/>
+          <path d="M12 26 19 32 12 38 5 32Z" stroke="#A855F7" stroke-width="2.4"
+                stroke-linejoin="round"/>
+          <path d="M34 4 36 11 43 13 36 15 34 22 32 15 25 13 32 11Z"
+                stroke="#5BE7C4" stroke-width="2.4" stroke-linejoin="round"/>
+        </svg>
+        <span>Tree of Arcoer<small id="synergyCount">— tokens connected</small></span>
+      </span>
+      <span class="chev">›</span>
+    </button>
+  </section>
+
+  <div class="modal" id="mPlayer">
+    <div class="sheet">
+      <button class="xbtn" data-close="mPlayer" aria-label="Close">✕</button>
+      <h2 id="playerTitle">Bluetooth</h2>
+      <p class="sub2" id="playerSub">Connect your phone to Arcoer Nexus.</p>
+
+      <div class="pgrid">
+      <div>
+      <!-- Shown whenever BT mode is active but nothing has connected.
+           Always appears on entering the mode, regardless of where the
+           mode was started from. -->
+      <div id="btWaiting" style="display:none">
+        <div class="waitbox">
+          <div class="pulsering"><span>⌁</span></div>
+          <p class="waittitle">Waiting for your phone</p>
+          <p class="waitsub">Open Bluetooth settings and pair with
+            <b>Arcoer Nexus</b></p>
+        </div>
+      </div>
+
+      <div id="btReady">
+      <div class="now">
+        <div class="disc" id="disc"><span class="btmark">⌁</span></div>
+        <div class="meta">
+          <p class="title" id="title">Nothing playing</p>
+          <p class="artist" id="artist">—</p>
+        </div>
+      </div>
+      <div class="bar"><i id="barFill"></i></div>
+      <div class="times"><span id="tNow">0:00</span><span id="tEnd">--:--</span></div>
+      <div class="transport" id="btTransport">
+        <button class="tbtn" data-cmd="prev" title="Previous">⏮</button>
+        <button class="tbtn main" id="playBtn" data-cmd="play" title="Play or pause">▶</button>
+        <button class="tbtn" data-cmd="next" title="Next">⏭</button>
+      </div>
+
+      <!-- Vinyl's only control. Placing the disc is the play button. -->
+      <div class="transport" id="vinylTransport" style="display:none">
+        <!-- ONE direction button, like the Nexus has: the arrow itself
+             shows which way it is set, and tapping flips it. Two
+             separate buttons made it look like two settings. -->
+        <button class="tbtn" id="dirBtn" title="Which way the disc spins">↻</button>
+        <button class="tbtn" id="loopBtnV" data-cmd="loop"
+                title="Repeat this side">⟲</button>
+      </div>
+
+      <!-- Vinyl only: the phone owns its own volume over Bluetooth,
+           and repeat has no meaning for a streamed track. -->
+      <div id="vinylOnly" style="display:none">
+        <p class="sub">VOLUME</p>
+        <div class="rowlabel"><span>Vinyl volume</span><b id="volVal">50%</b></div>
+        <input type="range" id="vol" min="0" max="100" value="50">
+
+      </div>
+
+      </div>
+      </div>
+      <div id="lightsWhilePlaying">
+      <p class="sub" style="margin-bottom:12px">LIGHTS WHILE THIS PLAYS</p>
+      <div class="stack" id="syncList"></div>
+      <div class="xrow"><button id="styleDefault">Make this my default</button></div>
+      <p class="sub2" style="text-align:center;margin:8px 0 0;font-size:11px">
+        Saves the chosen lighting to this account, so it is what plays next
+        time &mdash; the same button the Nexus has.</p>
+      </div>
+      </div>
+
+      <p class="sub2" style="text-align:center;margin:18px 0 0">
+        Closing this window leaves the music playing. Use Exit mode to
+        send the device back to its home screen.
+      </p>
+      <div class="xrow"><button class="danger" id="exitMode">Exit mode</button></div>
+
+      </div>
+  </div>
+
+  <!-- Elements of BTS & CORTIS. Full screen rather than a
+       sheet: it's the centrepiece, and the carousel needs the width.
+       Slot contents are rewritten by render(), so the markup here is
+       just the shells. -->
+  <div class="modal full" id="mSynergy">
+    <div class="sheet fullsheet">
+      <button class="xbtn" data-close="mSynergy" aria-label="Close">✕</button>
+      <div class="aurora"></div>
+      <div class="starfield"></div>
+      <div class="halos"><i></i><i></i><i></i><i></i></div>
+
+      <div class="synhead">
+        <p class="syneyebrow">THE</p>
+        <h2 class="syntitle">Tree of Arcoer</h2>
+        <p class="synsub" id="synSummary">—</p>
+      </div>
+
+      <p class="railcap">LEFT · SLOTS 1–7</p>
+      <div class="rail" id="slotsL"></div>
+
+      <p class="railcap">RIGHT · SLOTS 8–14</p>
+      <div class="rail" id="slotsR"></div>
+
+      <!-- Unlocks only when all fourteen have been seated. Hidden
+           rather than disabled: the point is that it is earned, so it
+           should not sit there greyed out advertising itself. -->
+      <button class="almanac-btn" id="almanacBtn" style="display:none">
+        <span class="book" aria-hidden="true">
+          <span class="cover"></span>
+          <span class="pages"></span>
+          <span class="spine"><i></i><i></i><i></i></span>
+          <span class="mark"></span>
+        </span>
+        <span>
+          <b>The Almanac</b>
+          <small>All fourteen gathered · the almanac awaits</small>
+        </span>
+      </button>
+
+      <p class="inscription">
+        <span class="star">✦</span>
+        So long as the elements resonate, the light endures.<br>
+        Should the last of them fall dark, the power returns to silence.
+      </p>
+
+      <div class="collections">
+        <div class="coll">
+          <p class="collcap"><span class="cdot bts"></span>BTS ELEMENTS
+            <b id="btsCount">0/8</b></p>
+          <div class="orbs" id="btsOrbs"></div>
+        </div>
+        <div class="coll">
+          <p class="collcap"><span class="cdot cor"></span>CORTIS ELEMENTS
+            <b id="corCount">0/6</b></p>
+          <div class="orbs" id="corOrbs"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="mElemMode">
+    <div class="sheet">
+      <button class="xbtn" data-close="mElemMode" aria-label="Close">✕</button>
+      <h2>Element Mode</h2>
+      <p class="sub2">How the tokens react to what's playing.</p>
+      <div class="stack" id="elemList"></div>
+      </div>
+  </div>
+  </div>
+
+  <!-- Drawer -->
+  <div class="scrim" id="scrim"></div>
+  <aside class="drawer" id="drawer" aria-label="Menu">
+    <h3>MENU</h3>
+    <button id="openThemeHtml">Theme HTML <span class="chev">›</span></button>
+    <button id="openThemeNexus">Theme Arcoer Nexus <span class="chev">›</span></button>
+    <button id="openInfo">Info Arcoer Nexus <span class="chev">›</span></button>
+    <button id="openInfoHtml">Info HTML <span class="chev">›</span></button>
+    <button id="openSettings">Settings <span class="chev">›</span></button>
+  </aside>
+
+  <!-- Per-logo idle lighting. Each logo owns a stretch of the strip,
+       so it gets its own animation and colour. Options on the left,
+       the actual logo previewing that choice on the right. -->
+  <div class="modal" id="mAlmanac">
+    <div class="sheet" style="max-width:400px;text-align:center">
+      <button class="xbtn" data-close="mAlmanac" aria-label="Close">✕</button>
+      <p class="alm-star">✦</p>
+      <h2 style="margin:0 0 10px">Your Almanac Is Ready</h2>
+      <p class="sub2" style="text-align:center">
+        All fourteen are gathered and the constellation is complete.<br><br>
+        Go to Elements on the Nexus and tap any element to reveal who
+        they are — their name, where they were born, their colour, and
+        their story.
+      </p>
+    </div>
+  </div>
+
+  <div class="modal" id="mElement">
+    <div class="sheet" style="max-width:400px">
+      <button class="xbtn" data-close="mElement" aria-label="Close">✕</button>
+      <div class="elhead">
+        <span class="eldot" id="elDot"></span>
+        <div>
+          <h2 id="elName" style="margin:0">—</h2>
+          <p class="st" id="elMeta">—</p>
+        </div>
+      </div>
+
+      <p class="sub2" id="elNote" style="margin:4px 0 16px"></p>
+
+      <!-- Read-only. Choosing an element's colour was removed on
+           purpose: each one HAS a colour, and overriding it makes the
+           fourteen interchangeable, which is the opposite of the point.
+           Its identity is shown, not edited. -->
+      <div class="kv"><span>Element</span><span id="elType">—</span></div>
+      <div class="kv"><span>Colour</span><span id="elRgb">—</span></div>
+
+      </div>
+  </div>
+
+  <!-- Music style info: description plus a demo of the actual strip,
+       since these modes are about how the strip behaves rather than
+       how one logo glows. -->
+  <div class="modal" id="mSyncInfo">
+    <div class="sheet" style="max-width:400px">
+      <button class="xbtn" data-close="mSyncInfo" aria-label="Close">✕</button>
+      <h2 id="syncInfoName">—</h2>
+      <p class="sub2" id="syncInfoDesc">—</p>
+      <div class="demo" id="syncInfoDemo"></div>
+      <div class="xrow"><button id="syncInfoUse">Use this one</button></div>
+    </div>
+  </div>
+
+  <div class="modal" id="mOptInfo">
+    <div class="sheet" style="max-width:380px">
+      <button class="xbtn" data-close="mOptInfo" aria-label="Close">✕</button>
+      <h2 id="optInfoName">—</h2>
+      <p class="sub2" id="optInfoDesc">—</p>
+      <div class="lprev-box" id="optInfoLogoBox" style="min-height:150px">
+        <span id="optInfoPreview"></span>
+      </div>
+      <div id="optInfoStripBox" style="display:none">
+        <div class="demo" id="optInfoStrip"></div>
+        <p class="sub2" style="text-align:center;margin:10px 0 0;font-size:11.5px">
+          Shown reacting to a steady beat</p>
+      </div>
+      <div class="xrow">
+        <button id="optInfoUse">Use this one</button>
+        <button data-close="mOptInfo">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="mSettings">
+    <div class="sheet">
+      <button class="xbtn" data-close="mSettings" aria-label="Close">✕</button>
+      <h2>Settings</h2>
+      <p class="sub2">Device configuration.</p>
+      <button class="bigbtn" id="openWifi">
+        <span>Wi-Fi<small id="wifiSub">—</small></span>
+        <span class="chev">›</span>
+      </button>
+      <p class="sub">STATUS</p>
+      <div class="status" style="margin-bottom:14px">
+        <span class="pill" id="pSD">SD —</span>
+        <span class="pill" id="pNFC">NFC —</span>
+        <span class="pill" id="pWifi">Wi-Fi —</span>
+      </div>
+
+      <p class="sub">SYSTEM</p>
+      <div class="seg">
+        <button data-cmd="restart">Restart</button>
+        <button class="danger" id="resetBtn">Factory reset</button>
+      </div>
+
+      </div>
+  </div>
+
+  <div class="modal" id="mWifi">
+    <div class="sheet">
+      <button class="xbtn" data-close="mWifi" aria-label="Close">✕</button>
+      <h2>Wi-Fi</h2>
+      <p class="sub2">The network the Nexus is on. Changing it is done on the
+        device itself — Settings → Wi-Fi on the touchscreen — since this
+        page can only reach it while it's already online.</p>
+      <div class="wifirow">
+        <!-- Signal fan. Arcs are dimmed individually by strength, the
+             same way a phone shows bars. -->
+        <svg class="fan" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path id="wArc3" d="M2 8.5a15 15 0 0 1 20 0" stroke="currentColor"
+                stroke-width="2.2" stroke-linecap="round"/>
+          <path id="wArc2" d="M5.5 12.5a10 10 0 0 1 13 0" stroke="currentColor"
+                stroke-width="2.2" stroke-linecap="round"/>
+          <path id="wArc1" d="M9 16.5a5 5 0 0 1 6 0" stroke="currentColor"
+                stroke-width="2.2" stroke-linecap="round"/>
+          <circle id="wDot" cx="12" cy="20" r="1.6" fill="currentColor"/>
+        </svg>
+        <div style="min-width:0">
+          <p class="nm" id="wNet">Not connected</p>
+          <p class="st" id="wState">—</p>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <div class="kv"><span>IP address</span><span id="wIp">—</span></div>
+        <div class="kv"><span>Signal</span><span id="wSig">—</span></div>
+      </div>
+      </div>
+  </div>
+
+  <!-- Theme HTML: this page only. Saved to the phone automatically. -->
+  <div class="modal" id="mThemeHtml">
+    <div class="sheet">
+      <button class="xbtn" data-close="mThemeHtml" aria-label="Close">✕</button>
+      <h2>Theme HTML</h2>
+      <p class="sub2">How <em>this page</em> looks on your phone. Applies to
+        everything here instantly and is remembered automatically.</p>
+
+      <p class="sub">BACKGROUND</p>
+      <div class="wpgrid" id="wpBgList"></div>
+
+      <p class="sub">ACCENT</p>
+      <div class="swrow" id="wpAccentList"></div>
+      <div class="swrow" style="margin-top:9px">
+        <label class="swcustom" title="Pick any accent">
+          <input type="color" id="wpAccentCustom" value="#9B3DF0">
+        </label>
+      </div>
+
+      <p class="sub">PATTERN</p>
+      <div class="chips" id="wpPatternList"></div>
+
+      <p class="sub">FONT</p>
+      <div class="chips" id="wpFontList"></div>
+
+      <p class="sub">GLOW</p>
+      <div class="seg" id="wpGlowSeg">
+        <button data-glow="0">None</button>
+        <button data-glow="1">Soft</button>
+        <button data-glow="2">Strong</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Arcoer Nexus: the DEVICE'S screen, set remotely. -->
+  <div class="modal" id="mThemeNexus">
+    <div class="sheet">
+      <button class="xbtn" data-close="mThemeNexus" aria-label="Close">✕</button>
+      <h2>Theme Arcoer Nexus</h2>
+      <p class="sub2">The Nexus's own screen, changed from here.</p>
+
+      <p class="sub">PALETTE</p>
+      <div class="pal" id="palList"></div>
+      <p class="sub">BACKGROUND</p>
+      <div class="chips" id="texList"></div>
+      <p class="sub">FONT</p>
+      <div class="chips" id="nexFontList"></div>
+      <p class="sub">SLIDER KNOB</p>
+      <div class="chips" id="nexKnobList"></div>
+    </div>
+  </div>
+
+  <!-- Accounts, remote. -->
+  <div class="modal" id="mInfoHtml">
+    <div class="sheet">
+      <button class="xbtn" data-close="mInfoHtml" aria-label="Close">&#10005;</button>
+      <h2>Info HTML</h2>
+      <p class="sub2">About this page, rather than the device it controls.</p>
+      <div class="kv"><span>Name</span><span>Arcoer Nexus Remote</span></div>
+      <div class="kv"><span>Type</span><span>Installable web app (PWA)</span></div>
+      <div class="kv"><span>Transport</span><span>MQTT over secure WebSocket</span></div>
+      <div class="kv"><span>Broker</span><span>broker.hivemq.com : 8884</span></div>
+      <div class="kv"><span>Library</span><span>MQTT.js 5.10.1</span></div>
+      <div class="kv"><span>Hosting</span><span>GitHub Pages</span></div>
+      <div class="kv"><span>Pairing</span><span>QR key, stored on this device</span></div>
+      <div class="kv"><span>Theme</span><span>Saved locally, per browser</span></div>
+      <p class="sub2" style="text-align:center;margin:14px 0 0">
+        Commands are signed with the key from the QR code. Anyone without
+        it can see the topic but cannot control the Nexus.</p>
+    </div>
+  </div>
+
+  <div class="modal" id="mInfo">
+    <div class="sheet">
+      <button class="xbtn" data-close="mInfo" aria-label="Close">✕</button>
+      <h2>Info</h2>
+      <p class="sub2">The same specification the Nexus lists on its own screen.</p>
+      <div class="kv"><span>Name of Device</span><span>Arcoer Nexus</span></div>
+      <div class="kv"><span>Build Version</span><span>8.4.05</span></div>
+      <div class="kv"><span>Microcontroller</span><span>ESP32-S3 N16R8</span></div>
+      <div class="kv"><span>Flash Memory</span><span>Up to 32MB</span></div>
+      <div class="kv"><span>PSRAM</span><span>8MB</span></div>
+      <div class="kv"><span>Power Rated</span><span>5V, 7A</span></div>
+      <div class="kv"><span>UI System</span><span>LVGL</span></div>
+      <div class="kv"><span>Version Type</span><span>1</span></div>
+      <p class="sub2" style="text-align:center;margin:14px 0 0">
+        Information Updated on August 13, 2026</p>
+    </div>
+  </div>
+
+  <div class="modal" id="mLamp">
+    <div class="sheet">
+      <button class="xbtn" data-close="mLamp" aria-label="Close">&#10005;</button>
+      <h2>Lamp</h2>
+
+      <!-- Half circle, because a full dial has a dead bottom half that
+           still accepts touches. The arc IS the range: the left end is
+           the dimmest the strip usefully shows, the right end is full. -->
+      <div class="dialwrap">
+        <svg id="lampDial" viewBox="0 0 260 150" width="100%">
+          <path d="M20 130 A110 110 0 0 1 240 130" fill="none"
+                stroke="rgba(255,255,255,.10)" stroke-width="16"
+                stroke-linecap="round"/>
+          <path id="lampArc" d="" fill="none" stroke="var(--purple)"
+                stroke-width="16" stroke-linecap="round"/>
+          <circle id="lampKnob" cx="20" cy="130" r="13" fill="#fff"/>
+        </svg>
+        <div class="dialval"><b id="lampVal">Off</b></div>
+      </div>
+
+      <!-- Plain bulb, small sparkle, big sparkle: the three read as a
+           progression, so the icon says roughly where the wheel sits
+           without having to read the number. -->
+      <div class="bulbrow">
+        <span id="bulb0">&#128161;</span>
+        <span id="bulb1">&#10024;</span>
+        <span id="bulb2">&#127775;</span>
+      </div>
+
+      <div class="xrow"><button id="lampOff">Turn off</button>
+                        <button id="openLampSet">Settings</button></div>
+    </div>
+  </div>
+
+  <div class="modal" id="mLampSet">
+    <div class="sheet">
+      <button class="xbtn" data-close="mLampSet" aria-label="Close">&#10005;</button>
+      <h2>Lamp settings</h2>
+      <div class="xrow"><button id="lampBack">&#8592; Back to lamp</button></div>
+
+      <p class="sub">WHAT THE LAMP LIGHTS</p>
+      <div class="seg" id="lampScopeSeg">
+        <button data-lscope="0">LED strips</button>
+        <button data-lscope="1">Logos</button>
+        <button data-lscope="2">Both</button>
+      </div>
+      <p class="sub2" style="margin:8px 0 0;font-size:11px">
+        While the Nexus is asleep the lamp only lights the strips &mdash; the
+        logos keep their sleep animation.</p>
+
+      <p class="sub">COLOUR</p>
+      <div class="swrow" id="lampColList"></div>
+    </div>
+  </div>
+
+  <p class="foot">
+    Controls the Nexus on your desk.<br>
+    Both need to be online at the same time.
+  </p>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   PROTOCOL
+   Two topics, both JSON. One state blob out, one command in -- far
+   easier to keep in sync than a topic per property, and adding a
+   field later breaks nothing.
+       <BASE>/state   device -> here   (retained)
+       <BASE>/cmd     here   -> device
+       <BASE>/lwt     last will, "offline"
+   ══════════════════════════════════════════════════════════════════ */
+const BASE  = "acn_912d35a32b512e49326ac4e9";
+
+/* ══════════════════════════════════════════════════════════════════
+   THE LOCK -- nothing happens without the QR
+   ══════════════════════════════════════════════════════════════════
+   The page is a public static site and always will be, so it cannot be
+   hidden. What it CAN do is hold no secrets and show nothing.
+
+   The key arrives in the URL FRAGMENT, which the QR on the device
+   encodes:  .../Arcoer/#k=<key>&h=<host>
+
+   The fragment is chosen deliberately over a query string: browsers
+   never transmit the part after '#' to the server, so the key stays out
+   of GitHub's request logs and out of any Referer header a later
+   navigation might send.
+
+   Once read it is stashed on the phone and STRIPPED from the address
+   bar, which is what makes sharing safe -- copy the link after scanning
+   and what you send is the bare URL with no key in it. The recipient
+   gets a page that cannot connect and cannot command.
+
+   Honest about the limit: forwarding the QR IMAGE forwards the access,
+   because the QR is the key. That is a deliberate act rather than an
+   accident, which is the case worth protecting against.
+   ══════════════════════════════════════════════════════════════════ */
+const CRED_STORE = 'acn_cred';
+
+function readCredentials(){
+  // Fragment wins over anything stored, so a fresh scan re-keys the page.
+  const h = (location.hash || '').replace(/^#/, '');
+  if (h){
+    const q = new URLSearchParams(h);
+    const k = q.get('k');
+    if (k){
+      const cred = { k: k, h: q.get('h') || '' };
+      try { localStorage.setItem(CRED_STORE, JSON.stringify(cred)); } catch(e){}
+      // Strip it from the bar. replaceState leaves no history entry, so
+      // Back cannot walk to a URL that still carries the key.
+      history.replaceState(null, '', location.pathname + location.search);
+      return cred;
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(CRED_STORE) || 'null'); }
+  catch(e){ return null; }
+}
+
+let CRED = readCredentials();
+
+function forgetCredentials(){
+  try { localStorage.removeItem(CRED_STORE); } catch(e){}
+  location.reload();
+}
+/* Port 8884 (WSS), not 1883. This page is served over HTTPS from
+   GitHub Pages, and a browser blocks plain ws:// from an https:// page
+   as mixed content -- it fails silently, which looks like the device
+   being offline. */
+const BROKER_FALLBACK = "wss://broker.hivemq.com:8884/mqtt";
+
+/* If the QR carries a host, use it. That is what lets you move to a
+   broker with real username/password auth later WITHOUT touching this
+   page -- you only regenerate the QR string. Until then it falls back
+   to the public broker, where the key below is the only gate. */
+function brokerUrl(){
+  if (CRED && CRED.h) return "wss://" + CRED.h + ":8884/mqtt";
+  return BROKER_FALLBACK;
+}
+
+/* Keyed by the DECIMAL value of each hex ID. The IDs skip 0x0A-0x0F,
+   so 0x10 is 16 rather than 10 -- writing them in decimal here keeps
+   that explicit instead of hiding a trap. */
+const MEMBERS = {
+  1:"RM", 2:"Suga", 3:"Jin", 4:"V", 5:"Jimin", 6:"J-Hope", 7:"Jungkook",
+  8:"Keonho", 9:"Juhoon",
+  16:"Seonghyeon", 17:"James", 18:"Martin", 19:"Army", 20:"Coer"
+};
+const BTS_IDS = new Set([1,2,3,4,5,6,7,19]);   // purple side; Army included
+
+/* Each element's own colour, matching the ATtiny firmware and the
+   device's table exactly. Keyed by decimal id. */
+const MEMBER_RGB = {
+  1:[255,105,180], 2:[220,220,235], 3:[0,0,255],     4:[0,255,0],
+  5:[135,206,250], 6:[0,255,80],    7:[255,0,0],
+  8:[255,147,41],  9:[220,220,235],
+  16:[150,0,255],  17:[255,105,180],18:[255,128,0],
+  19:[160,32,240], 20:[57,255,20]
+};
+
+/* Almanac entries, keyed by decimal id. Deliberately empty: writing
+   biographical detail about real people would be worse than an honest
+   blank, so this is for your own words. Fill any in and it appears when
+   that element is opened. */
+const ALMANAC = {
+  // 7:  "Something you actually want to say about Jungkook.",
+  // 19: "Army sits at the centre because...",
+};
+
+/* IN THE DEVICE'S ENUM ORDER, all eight of them.
+   This had seven entries starting at "Off", while the firmware's enum
+   is BEATSYNC=0, OFF=1, PARTY=2, SOLID=3, METER=4, PULSE=5, SPARKLE=6,
+   SPECIAL=7 -- so every style was described AND drawn as the one below
+   it, and Beat Sync, the default, was missing entirely. That is why the
+   preview looked wrong for whatever was actually playing. */
+const SYNC = [
+  ["Beat Sync","Colour flows along the strip and tracks the song closely. The hardest hits flash white."],
+  ["Off",     "Music plays with the lights left dark."],
+  ["Party",   "Rainbow across the strip. Every beat scatters it into different colours."],
+  ["Solid",   "One colour at a time, racing through the spectrum. Beats jump the colour."],
+  ["Meter",   "A VU bar filling from both ends, green through amber to red."],
+  ["Pulse",   "The whole strip breathes on one slowly drifting colour. The calm one."],
+  ["Sparkle", "Beats throw bright specks that fade out. Dark between hits."],
+  ["Song colour","This song's own colour."]
+];const ANIMS = ["Off","Rainbow","Pulse","Chase","Strobe","Party"];
+/* The Nexus's own six modes and its own wording, in ITS index order --
+   the index IS what gets sent, so this must not be reordered. The old
+   list here had five invented entries, so picking one on the phone set
+   a different mode on the device. */
+const ELEMS = [
+  ["BTS Mode",
+   "Only the seven BTS elements and Army light up. They react to whatever is playing \u2014 any artist, any song \u2014 while the CORTIS elements and Coer stay dark throughout."],
+  ["CORTIS Mode",
+   "Only the five CORTIS elements and Coer light up. They react to whatever is playing \u2014 any artist, any song \u2014 while the BTS elements and Army stay dark throughout."],
+  ["All On",
+   "Default. Every element reacts to whatever is playing."],
+  ["Music Match (All Artists)",
+   "Only the group that is playing lights up. A BTS song wakes the BTS elements and Army; a CORTIS song wakes CORTIS and Coer. If the artist can't be read, everything reacts rather than nothing."],
+  ["All Off",
+   "Every element stays dark. Only the lamp strip reacts."],
+  ["Music Match (BTS & CORTIS)",
+   "Only a confirmed BTS or CORTIS track wakes anything. A BTS song lights the BTS elements and Army; a CORTIS song lights CORTIS and Coer. Any other artist, or a track whose artist cannot be read, plays with every element dark."]
+];
+/* Shown in the Nexus's display order, which is not index order. */
+const ELEM_ORDER = [0, 1, 4, 2, 3, 5];
+
+/* The Nexus's three screen fonts, in its index order. */
+const NEXUS_FONTS = ["Montserrat","Outfit","Lora"];
+/* This page's own fonts -- purely local, nothing to do with the device. */
+const PAGE_FONTS = [
+  ["System",   "system-ui,-apple-system,'Segoe UI',sans-serif"],
+  ["Rounded",  "'Nunito','Quicksand',system-ui,sans-serif"],
+  ["Mono",     "'JetBrains Mono','SF Mono',ui-monospace,monospace"],
+  ["Serif",    "'Iowan Old Style','Palatino',Georgia,serif"],
+  ["Condensed","'Oswald','Roboto Condensed',system-ui,sans-serif"]
+];
+
+const PALETTES = [
+  ["Midnight","#0B0B18","#235B8A"],["Nebula","#1A0B2E","#9B3DF0"],
+  ["Ocean","#081C24","#1AA7B0"],   ["Sunset","#2A120B","#E0703A"],
+  ["Forest","#0B1F14","#3DAA5E"],  ["Sakura","#2A0F1C","#FF6FA5"],
+  ["Amethyst","#150B24","#7E5BEF"],["Ember","#24090B","#E8453C"],
+  ["Mono","#141416","#8A8A96"],    ["Aurora","#061A1A","#22D3A6"],
+  // The last four were missing too -- same problem as the textures.
+  // Colours taken from NAMTRAN_THEMES: base (bgTop) and accent.
+  ["Peony","#2E1420","#FF8FB8"],   ["Lavender","#1B1430","#A78BFA"],
+  ["Peach","#2B1512","#FF9E7A"],   ["Mint","#0C2620","#5EE0B0"]
+];
+/* ALL TWELVE, in the Nexus's own order -- NAMTRAN_TEXTURE_NAMES.
+   This listed only the first six, so everything from Blossom onward was
+   simply unreachable from the phone: the index sent is the position in
+   this array, so the six that existed were correct and the other six
+   did not exist at all. */
+const TEXTURES = ["Plain","Dots","Grid","Diagonal","Stars","Weave",
+                  "Blossom","Petals","Vines","Bubbles","Snow","Hearts"];
+
+let S = {};           // last known device state
+/* The mode the user last asked for. The device takes a moment to
+   switch, so its next state message still reports the previous mode --
+   trusting that blindly made the player window snap back to the mode
+   you'd just left. This holds until the device catches up. */
+let wantMode = null;
+let modeAdopted = false;   // see render(): first state wins, once
+let btJustEntered = false; // hold the waiting screen until a phone confirms
+let lastDevMode = null;    // the device's mode last time we looked
+let lastPainted = null;    // which mode the player panel is currently drawn as
+let client = null;
+let beatTimer = null;
+// Stable for the life of this tab, so the device counts one dashboard
+// rather than a new one every heartbeat.
+const MY_ID = 'web-' + Math.random().toString(16).slice(2, 10);
+
+/* ── LED strip ──────────────────────────────────────────────────── */
+const N = 42;         // fewer than the real 60: keeps each cell tappable-wide on a phone
+const strip = document.getElementById('strip');
+const cells = [];
+for (let i=0;i<N;i++){ const d=document.createElement('div'); d.className='led'; strip.appendChild(d); cells.push(d); }
+
+const hsv = (h,s,v)=>{ // h,s,v all 0-255, matching the firmware's integer HSV
+  h=((h%256)+256)%256; const r6=Math.floor(h/43), f=(h-r6*43)*6;
+  const p=(v*(255-s))>>8, q=(v*(255-((s*f)>>8)))>>8, t=(v*(255-((s*(255-f))>>8)))>>8;
+  const m=[[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][r6%6];
+  return `rgb(${m[0]},${m[1]},${m[2]})`;
+};
+
+let f = 0;
+function paintStrip(){
+  // Skipped entirely while a sheet is open. This rewrites 42 element
+  // backgrounds per call at ~16fps -- around 700 style writes a second
+  // -- and it sits behind a sticky backdrop-filter, so every one of
+  // them forces a re-blur. Behind an open modal none of it is visible,
+  // so the work is pure waste and it was a large part of the lag.
+  if (document.body.classList.contains('sheet-open')) return;
+  f++;
+  const playing = S.playing && (S.mode==='bt'||S.mode==='vinyl');
+  const lvl = playing ? (S.level||0) : 0;
+  const style = S.musicStyle|0, anim = S.ledAnim|0;
+  let label;
+
+  if (playing) {
+    label = "SYNC — " + (SYNC[style]?SYNC[style][0].toUpperCase():"?");
+    const beat = lvl > 170;
+    // ── A HIGH FLOOR, AND A COMPRESSED RANGE ─────────────────────
+    // 90 was too dark. lvl is near zero most of the time between beats,
+    // so the strip sat at the floor almost permanently and the preview
+    // read as muddy navy rather than as the colour it represents.
+    //
+    // The device has to be dim: it is limited by current, and by the
+    // brightness cap. A screen has neither constraint, so there is no
+    // reason for the preview to inherit them -- what it should show is
+    // what the strip LOOKS like, not what it is powered at.
+    //
+    // Floor 165, and the level only moves the top third. Quiet is
+    // clearly coloured; a beat still visibly lifts it.
+    const V = Math.min(255, 165 + Math.round(lvl * 90 / 255));
+    for (let i=0;i<N;i++){
+      let c = '#151021';
+      if (style===0){ c = hsv(f*2 + i*(255/N), 255, beat ? 255 : V); }      // Beat Sync
+      else if (style===2){ c = hsv(f*3 + i*(255/N) + (beat?i*53:0), 255, V); }  // Party
+      else if (style===3){ c = hsv(f*6 + (beat?70:0), 255, V); }               // Solid
+      else if (style===4){ const half=N/2, lit=(lvl*half)/255, pos=i<half?i:N-1-i;
+                           if (pos<lit) c = hsv(85-(pos*85/half),255,220); }    // Meter
+      else if (style===5){ c = hsv(f/3, 230, V); }                             // Pulse
+      else if (style===6){ const h=(i*2654435761 ^ Math.floor(f/6)*40503)>>>0;
+                           if ((h&3)===0 && beat) c = hsv((h>>8)&255,255,255); } // Sparkle
+      else if (style===7){ const sp=(S.special|0);                              // Song colour
+                           c = sp===2 ? (Math.floor(f/14)%2 ? `rgb(${V},0,0)` : `rgb(0,${V},0)`)
+                             : sp===0 ? `rgb(0,${Math.round(V*.35)},${V})`
+                                      : `rgb(${V},${Math.round(V*.84)},0)`; }
+      cells[i].style.background = c;
+    }
+  } else {
+    label = "STRIP — " + (ANIMS[anim]||"Off").toUpperCase();
+    for (let i=0;i<N;i++){
+      let c = '#151021';
+      if (anim===1){ c = hsv(i*(255/N)+f*4,255,255); }
+      else if (anim===2){ const ph=(f*6)&255;
+                          // Floored at 120 for the same reason as above:
+                          // the trough used to reach black and the whole
+                          // strip vanished into the page for half a cycle.
+                          const bv = ph<128?ph*2:(255-ph)*2;
+                          c = hsv(f,255, Math.max(120, bv)); }
+      else if (anim===3){ const head=Math.floor(f/2)%N, d=(head-i+N)%N;
+                          if (d<5) c = hsv(f,255,255-d*55); }
+      else if (anim===4){ const on=(f%6)<2; c = on?'#fff':'#151021'; }
+      else if (anim===5){ const h=(i*2654435761 ^ Math.floor(f/3)*40503)>>>0;
+                          if ((h&7)!==0) c = hsv((h>>8)&255,255,255); }
+      cells[i].style.background = c;
+    }
+  }
+  document.getElementById('stripMode').textContent = label;
+  document.getElementById('stripSrc').textContent =
+    S.mode==='bt' ? 'BLUETOOTH' : S.mode==='vinyl' ? 'VINYL' : 'IDLE';
+  tintEmblem();   // same cadence as the strip, so the two never disagree
+}
+const reduced = matchMedia('(prefers-reduced-motion:reduce)').matches;
+setInterval(paintStrip, reduced ? 500 : 60);
+
+/* ── Build the option lists from the tables above ────────────────── */
+function build(){
+  const sl = document.getElementById('syncList');
+  sl.className = 'optlist';
+  // DISPLAY ORDER: Off first, then Beat Sync, matching the Nexus.
+  // The VALUE sent is still the enum index -- the device saves it, so
+  // reordering the enum would change what every saved setting means.
+  // Only the order they are listed in changes.
+  const SYNC_ORDER = [1, 0, 2, 3, 5, 4, 6, 7];
+  SYNC_ORDER.forEach(i=>{
+    const sn = SYNC[i];
+    const row = document.createElement('div'); row.className = 'optrow';
+    const b = document.createElement('button');
+    b.textContent = sn[0]; b.dataset.sync = i;
+    b.onclick = ()=> send({cmd:'musicStyle', value:i});
+    const inf = document.createElement('button');
+    inf.className = 'infobtn'; inf.textContent = '\u24D8';
+    inf.setAttribute('aria-label', 'What does ' + sn[0] + ' look like?');
+    inf.onclick = (e)=>{ e.stopPropagation(); showOptInfo('sync', i); };
+    row.appendChild(b); row.appendChild(inf); sl.appendChild(row);
+  });
+
+  // ── Sleep, replacing the old idle-animation chips ───────────────
+
+  // Element modes, in the Nexus's DISPLAY order but carrying its INDEX.
+  const el = document.getElementById('elemList');
+  ELEM_ORDER.forEach(i=>{
+    const e = ELEMS[i];
+    const b = document.createElement('button');
+    b.innerHTML = e[0] + '<small>' + e[1] + '</small>';
+    b.onclick = ()=>{ send({cmd:'elementMode', value:i}); closeModal('mElemMode'); };
+    b.dataset.elem = i;
+    el.appendChild(b);
+  });
+
+  // Fonts -- this page's, then the device's.
+  const pf = document.getElementById('wpFontList');
+  if (pf) PAGE_FONTS.forEach((f,i)=>{
+    const b = document.createElement('button');
+    b.textContent = f[0]; b.style.fontFamily = f[1]; b.dataset.pfont = i;
+    b.onclick = ()=>{ wp.font = i; applyWallpaper(); };
+    pf.appendChild(b);
+  });
+  // The Nexus's ten knob shapes, in its own index order.
+  const NEXUS_KNOBS = ['Circle','Square','Ring','Heart','Star',
+                       'Moon','Sun','Flower','Note','Snow'];
+  const nk = document.getElementById('nexKnobList');
+  if (nk) NEXUS_KNOBS.forEach((n,i)=>{
+    const b = document.createElement('button');
+    b.textContent = n; b.dataset.nknob = i;
+    b.onclick = ()=> send({ cmd:'knob', value:i });
+    nk.appendChild(b);
+  });
+
+  const nf = document.getElementById('nexFontList');
+  if (nf) NEXUS_FONTS.forEach((n,i)=>{
+    const b = document.createElement('button');
+    b.textContent = n; b.dataset.nfont = i;
+    b.onclick = ()=> send({ cmd:'font', value:i });
+    nf.appendChild(b);
+  });
+
+  // Clock format. Two flags on the device, so three sensible rows.
+ const pl = document.getElementById('palList');
+  PALETTES.forEach((p,i)=>{ const b=document.createElement('button'); b.className='sw';
+    b.title=p[0]; b.setAttribute('aria-label',p[0]);
+    b.style.background = `linear-gradient(160deg, ${p[1]}, #05030A)`;
+    const dot=document.createElement('i'); dot.style.background=p[2]; b.appendChild(dot);
+    b.onclick = ()=>send({cmd:'theme', value:i}); b.dataset.pal=i; pl.appendChild(b); });
+
+  const tl = document.getElementById('texList');
+  TEXTURES.forEach((n,i)=>{ const b=document.createElement('button'); b.textContent=n;
+    b.onclick = ()=>send({cmd:'texture', value:i}); b.dataset.tex=i; tl.appendChild(b); });
+
+  /* Rails wrap around: three identical sets laid end to end, starting
+     in the middle one. When a scroll drifts into an outer set we jump
+     back by exactly one set-width -- the content is identical there,
+     so the jump is invisible and you can keep swiping forever in
+     either direction. */
+  for (const [id,from] of [['slotsL',0],['slotsR',7]]){
+    const g = document.getElementById(id);
+    for (let rep=0; rep<3; rep++){
+      for (let i=0;i<7;i++){
+        const d = document.createElement('div');
+        d.className = 'slot'; d.dataset.slot = from + i;
+        d.innerHTML = '<span class="num">SLOT ' + (from+i+1) + '</span>' +
+                      '<span class="glyph"></span>' +
+                      '<span class="who">Empty</span>';
+        g.appendChild(d);
+      }
+    }
+    makeInfinite(g);
+  }
+
+  // One builder for both the centre and the orbiting members -- they
+  // differ only in size and placement, not in behaviour.
+  function makeOrb(id, cls, isCentre){
+    const b = document.createElement('button');
+    b.className = 'orb ' + cls + (isCentre ? ' special centre' : '');
+    b.dataset.orb = id;
+    const nm = MEMBERS[id] || id;
+    b.innerHTML = '<span class="ring">' + (isCentre ? '\u2726' : nm[0]) + '</span>' +
+                  '<span class="nm">' + nm + '</span>';
+    b.onclick = ()=> openElement(id);
+    return b;
+  }
+
+  // The two collections. Every member always has an orb -- lit when
+  // seated, dark when not -- so it reads as a set to complete rather
+  // than a list that appears out of nowhere.
+  const BTS_SET = [1,2,3,4,5,6,7,19];        // 19 = Army, the special one
+  const COR_SET = [8,9,16,17,18,20];         // 20 = Coer, the special one
+  for (const [gid, set, cls, special] of
+       [['btsOrbs', BTS_SET, 'bts', 19], ['corOrbs', COR_SET, 'cor', 20]]){
+    const g = document.getElementById(gid);
+    const ring = set.filter(id => id !== special);   // everyone but the centre
+    ring.forEach((id, i)=>{
+      const b = makeOrb(id, cls, false);
+      // Start at 12 o'clock and go clockwise, so the arrangement reads
+      // as deliberate rather than arbitrary.
+      const ang = (i / ring.length) * 2 * Math.PI - Math.PI / 2;
+      b.style.transform = `translate(${Math.cos(ang) * 104}px, ${Math.sin(ang) * 104}px)`;
+      g.appendChild(b);
+    });
+    // One spoke per member, angled at it. Added before the centre gem
+    // so they pass underneath rather than across it.
+    ring.forEach((id, i)=>{
+      const ang = (i / ring.length) * 360 - 90;
+      // Wide blurred pass first so it sits underneath the bright core.
+      ['wide','core'].forEach(cls=>{
+        const sp = document.createElement('span');
+        sp.className = 'spoke ' + cls;
+        sp.style.width = '104px';
+        sp.style.transform = `rotate(${ang}deg)`;
+        g.appendChild(sp);
+      });
+    });
+
+    const c = makeOrb(special, cls, true);           // centre, no offset
+    g.appendChild(c);
+  }
+}
+build();
+
+/* ── Render device state ─────────────────────────────────────────── */
+const mmss = ms => { if(!ms||ms<0) return '--:--';
+  const t=Math.floor(ms/1000); return Math.floor(t/60)+':'+String(t%60).padStart(2,'0'); };
+const press = (sel, on) => document.querySelectorAll(sel)
+  .forEach(b => b.setAttribute('aria-pressed', on(b) ? 'true' : 'false'));
+
+function render(){
+  const playing = !!S.playing;
+  // What the window should be SHOWING, which briefly differs from what
+  // the device reports while a mode switch is in flight. Every
+  // mode-dependent branch below reads this, or half the window would
+  // show one mode and half the other.
+  const shownMode = wantMode || S.mode;
+  document.getElementById('title').textContent  = S.title  || 'Nothing playing';
+  document.getElementById('artist').textContent = S.artist || (S.mode==='vinyl'
+    ? 'Place a disc on the platform' : 'Connect your phone over Bluetooth');
+  // A freshly connected phone reports playing before anything has
+  // started, so the button showed PAUSE with silence coming out -- and
+  // tapping it sent 'pause' when what she wanted was 'play'.
+  //
+  // A track that is really running has a title AND a position that is
+  // moving. Neither on its own is enough: a paused track keeps its
+  // title, and position can sit at 0 for a moment after a real start.
+  const reallyPlaying = playing && !!S.title && (S.posMs | 0) > 0;
+  document.getElementById('playBtn').textContent = reallyPlaying ? '❚❚' : '▶';
+  document.getElementById('playBtn').dataset.cmd = reallyPlaying ? 'pause' : 'play';
+
+  // The spinning disc was dropped in the new layout -- the mode icons
+  // and the emblem already carry that information, and the centre
+  // column has no room to spare. Guarded rather than assumed gone, so
+  // this can't throw and take the rest of render() down with it.
+  // Bluetooth waiting state. Shown whenever BT mode is on and no
+  // phone is connected -- however the mode was entered, so the prompt
+  // is never skipped just because the mode came from the touchscreen.
+  const bw = document.getElementById('btWaiting');
+  const br = document.getElementById('btReady');
+  if (bw && br){
+    // btConnected can still be true in a state message published just
+    // before the phone dropped, so trusting it alone let the panel show
+    // for a moment on a connection that was already gone -- and the
+    // Nexus followed the page there. btJustEntered forces the waiting
+    // screen until a state actually confirms a phone is attached.
+    const waiting = (shownMode === 'bt') && (!S.btConnected || btJustEntered);
+    if (btJustEntered && S.btConnected) btJustEntered = false;
+    // Vinyl gets NEITHER of these. btWaiting says "connect your phone"
+    // and btReady is the Bluetooth transport -- shown in vinyl mode
+    // they described a connection that has nothing to do with a disc.
+    const isBt = (shownMode === 'bt');
+    bw.style.display = (isBt && waiting) ? '' : 'none';
+    br.style.display = (isBt && !waiting) ? '' : 'none';
+
+    // Hide the animation picker while waiting for a phone. These modes
+    // describe how the strip behaves DURING a track, so offering them
+    // before anything is connected is a choice with nothing to apply to
+    // -- and it made the waiting screen look like a working player.
+    const lw = document.getElementById('lightsWhilePlaying');
+    if (lw) lw.style.display = waiting ? 'none' : '';
+  }
+
+  const disc = document.getElementById('disc');
+  if (disc){
+    // Art ONLY while a track is actually playing. Idle vinyl shows the
+    // drawn virtual record instead -- which is what "the disk image is
+    // not there" was about: with no art in the state blob, and the
+    // .art class never applied, the element fell back to a bare circle
+    // with no grooves and nothing to look at.
+    const hasArt = shownMode === 'vinyl' && playing && S.art;
+    disc.className = 'disc'
+                   + (shownMode === 'bt' ? ' bt' : '')
+                   + (shownMode === 'vinyl' && !hasArt ? ' vinyl' : '')
+                   + (hasArt ? ' art' : '')
+                   // Spins ONLY while something is actually playing --
+                   // a still disc is how you tell nothing is on.
+                   + (playing ? ' spin' : '');
+    disc.style.backgroundImage = hasArt ? `url("${S.art}")` : '';
+  }
+
+  const pct = (S.durMs>0) ? Math.min(100, (S.posMs/S.durMs)*100) : 0;
+  document.getElementById('barFill').style.width = pct + '%';
+  document.getElementById('tNow').textContent = mmss(S.posMs);
+  document.getElementById('tEnd').textContent = mmss(S.durMs);
+
+  // ── ADOPT THE DEVICE'S MODE ON ARRIVAL ────────────────────────
+  // The highlight followed S.mode, but nothing opened the matching
+  // player, so landing on a page while the Nexus was already in
+  // Bluetooth showed Home's layout with a Bluetooth pip lit. wantMode
+  // is only ever set by a tap, so on a fresh load it is null and the
+  // page had no idea where it was.
+  //
+  // Done ONCE, guarded, so it cannot fight a tap made a moment later.
+  // ── FOLLOW THE DEVICE WHENEVER ITS MODE CHANGES ───────────────
+  // wantMode was adopted ONCE and then never updated, so after the
+  // first state it overrode S.mode forever. Change mode on the
+  // touchscreen -- or tap Vinyl here while wantMode still said 'bt' --
+  // and shownMode kept reporting the old one, which is why the vinyl
+  // transport never appeared even though the Nexus had switched.
+  //
+  // Comparing against the LAST mode seen means a genuine change on
+  // either side is adopted, while a tap made a moment ago is not
+  // undone by a state that has not caught up yet.
+  if (S.mode && S.mode !== lastDevMode){
+    lastDevMode = S.mode;
+    wantMode = S.mode;
+    modeAdopted = true;
+  }
+  // And repaint the player for whatever is showing, rather than only
+  // when a button is tapped.
+  const sm = wantMode || S.mode;
+  if (sm && sm !== lastPainted){
+    lastPainted = sm;
+    if (sm === 'bt' || sm === 'vinyl') applyPlayerMode(sm);
+  }
+  press('#modeSeg button', b => b.dataset.mode === (wantMode || S.mode));
+  press('[data-lscope]', b => +b.dataset.lscope === (S.lampScope ?? -1));
+  press('[data-lcol]',   b => b.dataset.lcol.toUpperCase() ===
+                              String(S.lampColor || '').toUpperCase());
+  // ── WHY IT SNAPPED BACK ───────────────────────────────────────
+  // On release, lampDrag went false immediately, but the device's
+  // state takes a round trip to come back. Every render() in that
+  // window repainted the knob from the OLD S.lampBright -- so it flew
+  // back to 128 and only jumped to 176 when the echo finally landed.
+  //
+  // So the local value holds until the device agrees with it, or until
+  // a second has passed (a dropped command should not freeze the dial
+  // showing something untrue forever).
+  if (!lampDrag){
+    const dev = S.lampBright | 0;
+    if (lampPending && (dev === lampLast || Date.now() - lampSentAt > 1000)){
+      lampPending = false;
+    }
+    if (!lampPending) lampPaint(dev);
+  }
+  const nn = document.getElementById('nameNow');
+  if (nn) nn.textContent = S.nameSpinning ? ' Turning' : ' Stopped';
+  const ndb = document.getElementById('nameDirBtn');
+  if (ndb){
+    ndb.innerHTML = S.nameCcw ? '&#8634;' : '&#8635;';
+    ndb.classList.toggle('on', !!S.nameCcw);
+  }
+  press('[data-sync]',     b => +b.dataset.sync === (S.musicStyle|0));
+  press('[data-anim]',     b => +b.dataset.anim === (S.ledAnim|0));
+  press('[data-elem]',     b => +b.dataset.elem === (S.elementMode|0));
+  press('[data-pal]',      b => +b.dataset.pal  === (S.theme|0));
+  press('[data-tex]',      b => +b.dataset.tex  === (S.texture|0));
+  // New pickers. Anything the device does not publish yet stays
+  // unhighlighted rather than showing a guessed selection as active --
+  // ?? -1 can never match.
+  press('[data-nfont]',   b => +b.dataset.nfont   === (S.font         ?? -1));
+  press('[data-nknob]',   b => +b.dataset.nknob   === (S.knob         ?? -1));
+  press('[data-pfont]',   b => +b.dataset.pfont   === (wp.font | 0));
+  // Looked up here rather than using the const declared further down:
+  // render() runs before that line is reached, and a `const` in the
+  // temporal dead zone throws rather than reading as undefined.
+  const dirB = document.getElementById('dirBtn');
+  if (dirB){
+    const ccw = !!S.vinylCcw;
+    dirB.textContent = ccw ? '\u21BA' : '\u21BB';   // anticlockwise / clockwise
+    dirB.title = ccw ? 'Spinning anticlockwise \u2014 tap for clockwise'
+                     : 'Spinning clockwise \u2014 tap for anticlockwise';
+    dirB.classList.toggle('on', ccw);
+  }
+
+
+  if (document.activeElement !== document.getElementById('vol')){
+    document.getElementById('vol').value = S.volume ?? 50;
+    document.getElementById('volVal').textContent = (S.volume ?? 70) + '%';
+  }
+  // Transport is Bluetooth-only; vinyl gets the loop toggle alone.
+  const isVinyl = shownMode === 'vinyl';
+  const bt = document.getElementById('btTransport');
+  const vt = document.getElementById('vinylTransport');
+  if (bt) bt.style.display = isVinyl ? 'none' : '';
+  if (vt) vt.style.display = isVinyl ? '' : 'none';
+
+  const lb = document.getElementById('loopBtnV');
+  if (lb){
+    lb.setAttribute('aria-pressed', S.loop ? 'true' : 'false');
+    lb.title = S.loop ? 'Repeat is on' : 'Repeat this side';
+    // NOT .tbtn.main any more: that class paints a purple fill in the
+    // stylesheet, so the button looked pressed whether looping was on
+    // or not and this line had nothing left to say.
+    lb.style.background = S.loop ? 'var(--purple)' : '';
+    lb.style.borderColor = S.loop ? 'var(--purple)' : '';
+    // Two loops means looping, one means not -- readable without
+    // having to judge a shade of purple.
+    lb.textContent = S.loop ? '\u27F3\u27F3' : '\u27F2';
+    lb.style.fontSize = S.loop ? '13px' : '16px';
+  }
+
+  const toks = S.tokens || [];
+
+  // ── ONLY WHEN THE TOKENS ACTUALLY CHANGE ──────────────────────
+  // This rewrote className on 42 slot elements and every orb on EVERY
+  // state message. While the elements are syncing to music the device
+  // publishes constantly, so the Tree window was being fully restyled
+  // many times a second -- and it sits behind a backdrop-filter, so
+  // each rewrite forced another blur pass. That is the flashing.
+  //
+  // The token list is what these depend on and it changes only when a
+  // token is inserted or removed, so comparing it is enough. Everything
+  // else in the state can churn as fast as it likes.
+  const tokKey = toks.join(',');
+  if (tokKey !== lastTokKey){
+    lastTokKey = tokKey;
+    document.querySelectorAll('.slot').forEach(d=>{
+      const id = toks[+d.dataset.slot] | 0;
+      d.className = 'slot' + (id ? ' filled' + (BTS_IDS.has(id) ? '' : ' cortis') : '');
+      const who = d.querySelector('.who');
+      if (who) who.textContent = id ? (MEMBERS[id] || ('ID ' + id)) : 'Empty';
+    });
+  }
+
+  // Orbs and counts read the SAME list, so they were churning for the
+  // same reason. Recomputed only alongside the rails above would break
+  // the counters on first paint, so they stay -- but they are cheap
+  // class toggles rather than className rewrites, and toggle() is a
+  // no-op when the value has not changed.
+  const seatedSet = new Set(toks.filter(Boolean));
+  let nb = 0, nc = 0;
+  document.querySelectorAll('[data-orb]').forEach(b=>{
+    const id = +b.dataset.orb;
+    const on = seatedSet.has(id);
+    b.classList.toggle('on', on);
+    if (on) (BTS_IDS.has(id) ? nb++ : nc++);
+  });
+  const bc = document.getElementById('btsCount');
+  if (bc){
+    bc.textContent = nb + '/8';
+    document.getElementById('corCount').textContent = nc + '/6';
+    const tot = nb + nc;
+    document.getElementById('synSummary').textContent =
+      tot === 0 ? 'No elements are resonating yet'
+                : tot + (tot === 1 ? ' element' : ' elements') + ' resonating of 14';
+  }
+
+  refreshAlmanacLock();
+  const seated = (S.tokens || []).filter(x => x).length;
+  const sc = document.getElementById('synergyCount');
+  if (sc) sc.textContent = seated === 0 ? 'No tokens connected'
+        : seated === 1 ? '1 token connected'
+        : seated + ' tokens connected';
+  const em = document.getElementById('elemModeNow');
+  if (em) em.textContent = ELEMS[S.elementMode|0] ? ELEMS[S.elementMode|0][0] : '—';
+
+  // Wi-Fi. Arcs light up by strength, exactly like a phone: full at
+  // better than -55 dBm, down to a single dot below -80.
+  const wn = document.getElementById('wNet');
+  if (wn){
+    const ssid = S.ssid || '';
+    const on   = !!ssid && S.rssi != null;
+    wn.textContent = on ? ssid : 'Not connected';
+    document.getElementById('wState').textContent =
+      on ? 'Connected' : 'The device is offline or not on Wi-Fi';
+    document.getElementById('wIp').textContent  = S.ip || '—';
+    document.getElementById('wSig').textContent = S.rssi != null ? S.rssi + ' dBm' : '—';
+
+    const r = S.rssi;
+    const bars = !on ? 0 : r > -55 ? 3 : r > -68 ? 2 : r > -80 ? 1 : 0;
+    const fan  = document.querySelector('.fan');
+    if (fan) fan.style.color = on ? 'var(--mint)' : 'var(--faint)';
+    // Dim rather than hide, so the fan keeps its shape at any strength.
+    document.getElementById('wArc3').style.opacity = bars >= 3 ? 1 : .18;
+    document.getElementById('wArc2').style.opacity = bars >= 2 ? 1 : .18;
+    document.getElementById('wArc1').style.opacity = bars >= 1 ? 1 : .18;
+    document.getElementById('wDot').style.opacity  = on ? 1 : .35;
+
+    const ws = document.getElementById('wifiSub');
+    if (ws) ws.textContent = on ? ssid : 'Not connected';
+  }
+
+  const pill = (el, ok, txt) => { el.textContent = txt;
+    el.style.color = ok===null ? 'var(--dim)' : ok ? 'var(--mint)' : 'var(--amber)'; };
+  pill(document.getElementById('pSD'),  S.sd ?? null,  'SD ' + (S.sd==null?'—':S.sd?'ready':'not found'));
+  pill(document.getElementById('pNFC'), S.nfc ?? null, 'NFC ' + (S.nfc==null?'—':S.nfc?'ready':'not found'));
+  pill(document.getElementById('pWifi'), S.rssi!=null ? S.rssi>-75 : null,
+       'Wi-Fi ' + (S.rssi!=null ? S.rssi+' dBm' : '—'));
+}
+
+/* ── MQTT ────────────────────────────────────────────────────────── */
+function setLink(state, text){
+  const d = document.getElementById('dot');
+  d.className = 'dot' + (state==='on' ? ' on' : state==='bad' ? ' bad' : '');
+  document.getElementById('conn').textContent = text;
+  document.getElementById('body').classList.toggle('offline', state!=='on');
+}
+
+function send(msg){
+  if (!client || !client.connected) return;
+  if (!CRED || !CRED.k) return;
+  // The key rides on EVERY command. The device drops anything without
+  // it, so knowing the topic is not enough to control the Nexus.
+  client.publish(BASE + '/cmd', JSON.stringify(Object.assign({ key: CRED.k }, msg)));
+  // Optimistic: reflect the tap immediately rather than waiting a full
+  // round trip. The device's next state message is authoritative and
+  // will correct this if it disagreed.
+  if (msg.cmd==='mode')        S.mode = msg.value;
+  if (msg.cmd==='volume')      S.volume = msg.value;
+  if (msg.cmd==='ledAnim')     S.ledAnim = msg.value;
+  if (msg.cmd==='musicStyle')  S.musicStyle = msg.value;
+  if (msg.cmd==='lamp')        S.lamp = msg.value;
+  if (msg.cmd==='elementMode') S.elementMode = msg.value;
+  if (msg.cmd==='theme')       S.theme = msg.value;
+  if (msg.cmd==='texture')     S.texture = msg.value;
+  if (msg.cmd==='loop')        S.loop = msg.value;
+  if (msg.cmd==='play')        S.playing = true;
+  if (msg.cmd==='pause')       S.playing = false;
+  render();
+}
+
+function connect(){
+  // No key -> do not even open a socket. Not subscribing is what makes
+  // "shows nothing" true rather than cosmetic: with no subscription the
+  // state blob never arrives, so her name, network and track are never
+  // in this page's memory at all, let alone on screen.
+  if (!CRED || !CRED.k){ showLock(); return; }
+  setLink('', 'CONNECTING');
+  client = mqtt.connect(brokerUrl(), {
+    clientId: 'ntran-web-' + Math.random().toString(16).slice(2,10),
+    keepalive: 30, reconnectPeriod: 3000, connectTimeout: 8000, clean: true
+  });
+
+  client.on('connect', ()=>{
+    client.subscribe([BASE + '/state', BASE + '/lwt']);
+    setLink('bad', 'WAITING');   // broker reached; device not heard from yet
+    // Heartbeat, so the device can report "1 dashboard connected" in
+    // Settings. NOT retained and carrying no key: it says only "a page
+    // is open", so it needs no authenticating and leaves nothing behind
+    // on the broker when this tab closes.
+    const beat = ()=>{ if (client && client.connected)
+                         client.publish(BASE + '/presence', MY_ID); };
+    beat();
+    if (beatTimer) clearInterval(beatTimer);
+    beatTimer = setInterval(beat, 20000);   // device expires us after 45s
+  });
+  client.on('reconnect', ()=> setLink('', 'RECONNECTING'));
+  client.on('error',     ()=> setLink('bad', 'ERROR'));
+  client.on('close',     ()=> setLink('', 'OFFLINE'));
+
+  client.on('message', (topic, buf)=>{
+    const txt = buf.toString();
+    if (topic.endsWith('/lwt')){
+      if (txt === 'offline') setLink('bad', 'DEVICE OFF');
+      return;
+    }
+    try { S = Object.assign(S, JSON.parse(txt)); }
+    catch(e){ return; }   // malformed payload: keep the last good state
+
+    // Has access been reset on the device? The state blob carries the
+    // first six characters of the CURRENT key. If it disagrees with the
+    // key this page holds, every command we send is being dropped --
+    // and without this check that failure is completely silent, just
+    // buttons that do nothing. Better to say so and ask for a rescan.
+    if (S.keyId && CRED && CRED.k && S.keyId !== CRED.k.slice(0, 6)) {
+      if (beatTimer) { clearInterval(beatTimer); beatTimer = null; }
+      try { client.end(true); } catch(e){}
+      try { localStorage.removeItem(CRED_STORE); } catch(e){}
+      showLock('Access was reset on the Nexus. Scan the QR again to reconnect.');
+      return;
+    }
+    setLink('on', 'LIVE');
+    // Once the device confirms the mode we asked for, stop overriding.
+    if (wantMode && S.mode === wantMode) wantMode = null;
+    const shown = wantMode || S.mode;
+    if (shown === 'bt' || shown === 'vinyl') applyPlayerMode(shown);
+    render();
+  });
+}
+
+/* ── Emblem: three independent controls ──────────────────────────
+   Each piece owns one thing and is tinted by THAT thing's state, so
+   the colour is a readout rather than decoration:
+       cap   -> the idle/decoration animation
+       logo  -> the music sync style
+       2026  -> lamp brightness
+   Anything off shows grey, so the emblem never claims the lights are
+   doing something they aren't. */
+const GREY = '#6E6488';   // legible when off, without pretending the lights are on
+
+const hueCss = h => `hsl(${(((h % 256) + 256) % 256) * 360 / 256}deg 85% 68%)`;
+
+function tintEmblem(){
+  /* The three logos mirror their LED segments exactly. The device
+     reads the colour straight off the strip (cap 31-44, logo 45-51,
+     2026 52-58) and publishes it, so the page shows whatever those
+     LEDs are physically doing -- including off. No local guessing,
+     nothing to drift out of sync. */
+  const segs = [
+    ['.e-cap',  S.segCap],
+    ['.e-logo', S.segLogo],
+    ['.e-year', S.segYear]
+  ];
+  // ── VIVID, NOT LITERAL ──────────────────────────────────────────
+  // The hex arriving from the device is what the LEDs are actually
+  // being DRIVEN with, and that has already been through the brightness
+  // cap and the power limiter -- so a strip the eye reads as bright
+  // green sends something like #0F2A12, and the page rendered it as
+  // near-black mud.
+  //
+  // A screen has none of those constraints. So the HUE is kept exactly
+  // and the brightness pushed back to full: the strongest channel goes
+  // to 255 and the others scale with it, which is the same colour, seen
+  // the way the strip looks rather than the way it is powered.
+  //
+  // Saturation is lifted too. Averaging and dimming both pull channels
+  // toward each other, so most of the grey is subtracted before the
+  // scaling -- without that, a dim frame normalises to a pale wash
+  // instead of a colour.
+  const vivid = (hex)=>{
+    if (!hex || hex.length < 7) return hex;
+    let r = parseInt(hex.slice(1,3),16),
+        g = parseInt(hex.slice(3,5),16),
+        b = parseInt(hex.slice(5,7),16);
+    const lo = Math.min(r,g,b);
+    const cut = Math.floor(lo * 0.75);      // most of the grey, not all
+    r -= cut; g -= cut; b -= cut;
+    const hi = Math.max(r,g,b);
+    if (hi < 4) return hex;                 // genuinely dark, leave it
+    const k = 255 / hi;
+    const c = (v)=> Math.max(0, Math.min(255, Math.round(v * k)));
+    return '#' + [c(r),c(g),c(b)].map(v=>v.toString(16).padStart(2,'0')).join('');
+  };
+
+  if (S.segCap !== undefined){
+    segs.forEach(([sel, rawHex])=>{
+      const el = document.querySelector(sel);
+      if (!el) return;
+      const dark = !rawHex || rawHex === '#000000';
+      const hex  = dark ? rawHex : vivid(rawHex);
+      el.style.color = dark ? '#332C42' : hex;
+      // The opacity workaround is gone: every path in the cap emblem is
+      // currentColor now, so `color` above tints it like the other two
+      // and the dark case is handled by the same '#332C42' they get.
+      if (sel === '.e-cap') el.style.opacity = '1';
+      // Glow only when actually lit -- a halo on a dark logo would
+      // suggest the LEDs are on when they aren't.
+      el.style.filter = dark ? 'none' : 'drop-shadow(0 0 16px ' + hex + ')';
+    });
+    return;   // hardware is authoritative; skip the local fallback
+  }
+
+  const cap  = document.querySelector('.e-cap');
+  const logo = document.querySelector('.e-logo');
+  const year = document.querySelector('.e-year');
+  if (!cap) return;
+
+  // Cap -- idle animation. Each mode gets its own hue so they're
+  // distinguishable at a glance.
+  const anim = S.ledAnim|0;
+  cap.style.color = anim === 0 ? GREY : hueCss(anim * 40);
+
+  // Logo -- music sync. While something is actually playing this
+  // tracks the live audio energy, same as the strip does.
+  const playing = S.playing && (S.mode === 'bt' || S.mode === 'vinyl');
+  const style = S.musicStyle|0;
+  if (style === 0) {
+    logo.style.color = GREY;
+  } else if (playing && style === 6 && (S.special|0) >= 0) {
+    const sp = S.special|0;
+    logo.style.color = hueCss(sp === 0 ? 155 : sp === 1 ? 38 : 0);
+  } else if (playing) {
+    logo.style.color = hueCss(160 - (Math.min(255, S.level||0) * 160 / 255));
+  } else {
+    logo.style.color = hueCss(style * 36);   // idle: still shows which style is armed
+  }
+
+  // 2026 -- the lamp. Plain white, dimmed to match the actual level,
+  // since the lamp itself is white rather than coloured.
+  const lamp = S.lamp|0;
+  year.style.color = lamp === 0 ? GREY
+    : ['', '#5E586E', '#807A94', '#A49DBA', '#C9C2DC', '#FFFFFF'][lamp];
+}
+
+/* ── Per-logo idle lighting ───────────────────────────────────────
+   Each logo owns a stretch of the strip, so each gets its own
+   animation and colour rather than all three sharing one setting.
+
+   from/to are ZERO-BASED LED INDICES and must match SEG_CAP_LO..
+   SEG_YEAR_HI in ESP32S3.ino exactly -- if they drift, this page
+   highlights the wrong LEDs while the device lights the right ones.
+
+   Physical positions along the strip, for reference when re-checking
+   against the hardware:
+       positions 39-52  graduation cap   -> indices 38-51  (14 LEDs)
+       positions 53-59  arirang, middle  -> indices 52-58  ( 7 LEDs)
+       positions 60-66  2026, last seven -> indices 59-65  ( 7 LEDs)
+   Position 66 is the final LED of 66; its index is 65. */
+
+// The per-emblem controls lived here. The emblem is decoration now --
+// the three parts are spans, not buttons -- so the window they opened,
+// its state and every handler feeding it have gone with them.
+
+/* Info window. Descriptions used to sit under every option, which
+   turned the list into a wall of text you had to read past to reach
+   the choices. Behind an icon they're there when wanted and out of
+   the way when not -- and this is where the demo lives now. */
+let optInfoIx = 0;
+
+
+/* One info window, two kinds of preview:
+     'seg'  -> a logo animation, previewed on that logo
+     'sync' -> a music mode, previewed on a strip
+   Same window rather than two, so the layout and the Use button stay
+   consistent and there's only one thing to keep working. */
+// Only 'sync' now. The 'seg' kind explained a per-emblem animation,
+// and the emblem is decoration -- there is nothing left to apply to.
+let optInfoKind = 'sync';
+
+function showOptInfo(kind, ix){
+  // `kind` is kept in the signature so existing callers still work,
+  // but there is only one kind left.
+  optInfoKind = 'sync';
+  optInfoIx = ix;
+  const src = SYNC[ix];
+  document.getElementById('optInfoName').textContent = src[0];
+  document.getElementById('optInfoDesc').textContent = src[1];
+  document.getElementById('optInfoLogoBox').style.display  = 'none';
+  document.getElementById('optInfoStripBox').style.display = '';
+  openModal('mOptInfo');
+}
+// Explicit exit. Closing the window only closes the window -- the
+// device keeps playing, which is the point.
+document.getElementById('exitMode').onclick = ()=>{
+  send({cmd:'mode', value:'home'});
+  closeModal('mPlayer');
+};
+
+/* Music-style info. A fake level drives the demo: a swell with a hit
+   at the start of each bar, so both the quiet response and the beat
+   behaviour are visible without needing music playing. */
+let syncInfoIx = 0;
+const syncInfoCells = buildDemo(document.getElementById('syncInfoDemo'), 24);
+
+function showSyncInfo(i){
+  syncInfoIx = i;
+  document.getElementById('syncInfoName').textContent = SYNC[i][0];
+  document.getElementById('syncInfoDesc').textContent = SYNC[i][1];
+  openModal('mSyncInfo');
+}
+document.getElementById('syncInfoUse').onclick = ()=>{
+  send({cmd:'musicStyle', value:syncInfoIx});
+  closeModal('mSyncInfo');
+};
+
+document.getElementById('optInfoUse').onclick = ()=>{
+  send({cmd:'musicStyle', value:optInfoIx});
+  closeModal('mOptInfo');
+};
+
+
+/* ── Preview animations ──────────────────────────────────────────
+   Both windows show a live mini-strip rather than a static swatch --
+   names like "Breathe" or "Wave" don't tell you much until you see
+   them move. Only the visible one animates, so a hidden window isn't
+   burning frames in the background. */
+/* Infinite rail. One set is a third of the scroll width; drifting
+   past either edge snaps back by that amount onto the identical
+   content, so it reads as endless. */
+function makeInfinite(rail){
+  const recentre = ()=>{
+    const set = rail.scrollWidth / 3;
+    if (set < 10) return;                 // not laid out yet
+    if (rail.scrollLeft < set * 0.5)      rail.scrollLeft += set;
+    else if (rail.scrollLeft > set * 1.5) rail.scrollLeft -= set;
+  };
+  // Start in the middle set so there's room to swipe both ways
+  // immediately. Deferred, because scrollWidth is 0 until layout runs.
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{ rail.scrollLeft = rail.scrollWidth / 3; });
+  });
+  let t = null;
+  rail.addEventListener('scroll', ()=>{
+    // Wait for the gesture to settle: repositioning mid-swipe fights
+    // the momentum and feels like the rail is snagging.
+    clearTimeout(t); t = setTimeout(recentre, 90);
+  }, { passive:true });
+}
+
+function buildDemo(el, n){
+  // Null guard. The Sleep window replaced the idle-animation preview,
+  // so this is now called with a missing element -- and without the
+  // guard it throws on el.innerHTML at load, taking every script line
+  // after it (the whole dashboard) with it.
+  if (!el) return [];
+  el.innerHTML = '';
+  for (let i=0;i<n;i++) el.appendChild(document.createElement('i'));
+  return [...el.children];
+}
+// (logo window has no mini-strip -- the logo itself is the preview)
+
+/* One definition of what each animation looks like, shared by the
+   logo preview and the info demo. Two separate copies would drift the
+   moment either was tweaked. `i`/`n` position a pixel within the
+   segment, for the ones that vary along its length. */
+function segLevel(anim, i, n){
+  switch (anim){
+    case 0: return 0;                                                   // Off
+    case 1: return 255;                                                 // Solid
+    case 2: { const ph=(df*7)&255; return ph<128?ph*2:(255-ph)*2; }     // Breathe
+    case 3: { const ph=(df*3)&255; return 40 + (ph<128?ph:(255-ph)); }  // Pulse
+    case 4: { const ph=((i*(255/Math.max(n,1)) + df*5)|0)&255;          // Wave
+              return ph<128?ph*2:(255-ph)*2; }
+    case 5: { const h=((i+1)*2654435761 ^ Math.floor(df/2)*40503)>>>0;  // Sparkle
+              return (h & 7)===0 ? 255 : 45; }
+    default: return 255;
+  }
+}
+
+/* Turns an animation + colour choice into a CSS colour. Rainbow is a
+   colour VALUE rather than an animation, so it cycles hue here while
+   the animation still drives brightness -- that way any animation can
+   be rainbow, instead of rainbow being its own mode. */
+function segPaint(anim, colour){
+  const lvl = segLevel(anim, 0, 1);
+  if (lvl < 12) return '#3A3348';
+  const pct = Math.round(Math.max(lvl, 55) / 2.55);
+  if (colour === 'rainbow') return hsv((df * 4) & 255, 255, Math.max(lvl, 90));
+  return `color-mix(in srgb, ${colour} ${pct}%, #0B0812)`;
+}
+
+let df = 0;
+setInterval(()=>{
+ try {
+  df++;
+
+  // The Sleep window configures per-token and per-emblem animations,
+  // not the six ambient strip modes, so the strip preview that used to
+  // live here was showing something unrelated to every control under
+  // it. Removed rather than rewritten.
+
+
+  // Music-style info demo.
+  if (document.getElementById('mSyncInfo').classList.contains('open')){
+    const ph = df % 40;
+    const beat = (ph === 0 || ph === 20);
+    const lvl  = (ph < 10) ? (220 - ph*12) : (60 + ((df*3) % 60));
+    const N = syncInfoCells.length;
+    syncInfoCells.forEach((c,i)=>{
+      let col = '#151021';
+      const st = syncInfoIx;
+      if (st===1) col = hsv(df*3 + i*(255/N) + (beat?i*53:0), 255, Math.max(lvl,20));
+      else if (st===2) col = hsv(df*6 + (beat?70:0), 255, Math.max(lvl,20));
+      else if (st===3){ const h=N/2, lit=(lvl*h)/255, pos=i<h?i:N-1-i;
+                        if (pos<lit) col = hsv(85-(pos*85/h),255,220); }
+      else if (st===4) col = hsv(df/3, 230, Math.max(lvl,15));
+      else if (st===5){ const h=(i*2654435761 ^ Math.floor(df/6)*40503)>>>0;
+                        if ((h&3)===0 && beat) col = hsv((h>>8)&255,255,255); }
+      else if (st===6){ const sp=(S.special|0), v=Math.max(lvl,20);
+                        col = sp===2 ? (Math.floor(df/14)%2 ? `rgb(${v},0,0)` : `rgb(0,${v},0)`)
+                            : sp===0 ? `rgb(0,${Math.round(v*.35)},${v})`
+                                     : `rgb(${v},${Math.round(v*.84)},0)`; }
+      c.style.background = col;
+    });
+  }
+
+
+  // Logo window: the logo itself IS the preview -- it glows in the
+  // chosen colour, animating however the chosen mode does.
+ } catch (err) {
+   // ONE throw in here used to kill the interval for good -- setInterval
+   // does not restart a callback that threw, so a single null reference
+   // silently froze every live preview on the page until reload. That is
+   // the "opening a window breaks the whole site" shape. Logged and
+   // swallowed: a dead preview is bad, a dead page is worse.
+   console.error('anim tick:', err);
+ }
+}, 70);
+
+/* ── Modals ──────────────────────────────────────────────────────
+   Tap the backdrop or Close to dismiss; Escape works too. Clicks
+   inside the sheet must not bubble to the backdrop or the panel would
+   close the moment you touched anything in it. */
+function openModal(id){
+  document.getElementById(id).classList.add('open');
+  syncSheetOpen();
+}
+function closeModal(id){
+  document.getElementById(id).classList.remove('open');
+  syncSheetOpen();
+}
+// One class on <body> that the CSS above hangs off. Recomputed rather
+// than counted, so a modal closed by the backdrop or Escape can't leave
+// the flag stuck on.
+function syncSheetOpen(){
+  const any = document.querySelectorAll('.modal.open').length > 0;
+  document.body.classList.toggle('sheet-open', any);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   PAGE THEMING — this page only, not the device's screen.
+   Everything runs through CSS custom properties on :root, so a change
+   repaints the whole page at once instead of needing every rule
+   touched. Choices persist in localStorage so it stays hers.
+   ══════════════════════════════════════════════════════════════════ */
+const WP_BG = [
+  ['Amethyst', '#14101C', '#2A1B45'],
+  ['Midnight', '#0B0E18', '#16233F'],
+  ['Ocean',    '#08161C', '#0E3B47'],
+  ['Sakura',   '#1B0F17', '#4A1B33'],
+  ['Ember',    '#180C0A', '#4A1C15'],
+  ['Forest',   '#0A1410', '#173A2A'],
+  ['Mono',     '#111113', '#2A2A30'],
+  ['Wine',     '#170B14', '#43163A'],
+  ['Dusk',     '#12111B', '#3A2A4E'],
+  ['Ink',      '#07070B', '#1A1A26']
+];
+const WP_ACCENT = ['#9B3DF0','#4FC3F7','#5BE7C4','#FFB84D','#FF6FA5',
+                   '#E8453C','#A8E063','#C9A7FF','#22D3A6','#FFD678'];
+const WP_PATTERN = ['None','Dots','Grid','Diagonal','Stars','Weave',
+                    'Rules','Columns','Bubbles','Ripples','Chevron','Scatter'];
+
+const wp = Object.assign(
+  { bg:0, accent:'#9B3DF0', pattern:4, glow:1, font:0 },
+  JSON.parse(localStorage.getItem('ntran_wp') || '{}')
+);
+
+function patternCss(ix, accent){
+  const a = accent + '2E';                     // ~18% alpha
+  const b = accent + '1F';
+  switch (ix){
+    case 1: return `radial-gradient(circle, ${a} 1.2px, transparent 1.2px)`;
+    case 2: return `linear-gradient(${a} 1px, transparent 1px),
+                    linear-gradient(90deg, ${a} 1px, transparent 1px)`;
+    case 3: return `repeating-linear-gradient(45deg, ${a} 0 1px, transparent 1px 11px)`;
+    case 4: return `radial-gradient(circle, ${accent}44 1px, transparent 1px),
+                    radial-gradient(circle, #ffffff33 1px, transparent 1px)`;
+    case 5: return `repeating-linear-gradient(45deg, ${a} 0 1px, transparent 1px 13px),
+                    repeating-linear-gradient(-45deg, ${a} 0 1px, transparent 1px 13px)`;
+    // ── More textures ──
+    case 6: return `repeating-linear-gradient(0deg, ${a} 0 1px, transparent 1px 14px)`;
+    case 7: return `repeating-linear-gradient(90deg, ${a} 0 2px, transparent 2px 18px)`;
+    case 8: return `radial-gradient(circle at 50% 50%, ${b} 0 6px, transparent 6px)`;
+    case 9: return `repeating-radial-gradient(circle at 50% 50%, ${b} 0 1px, transparent 1px 12px)`;
+    case 10: return `linear-gradient(135deg, ${a} 25%, transparent 25%),
+                     linear-gradient(225deg, ${a} 25%, transparent 25%)`;
+    case 11: return `radial-gradient(circle, ${accent}3A 1.6px, transparent 1.6px),
+                     radial-gradient(circle, ${accent}1A 1.6px, transparent 1.6px)`;
+    default: return 'none';
+  }
+}
+/* ONE ENTRY PER GRADIENT, comma-separated to match.
+   Patterns 2 and 5 emit TWO gradients each but had a single size here,
+   so the browser applied size[0] to gradient one and then wrapped back
+   round -- the second layer took the NEXT pattern's size. That is why
+   Grid and Weave never looked right regardless of the layering fix. */
+const PATTERN_SIZE = [
+  'auto',                    // 0 none
+  '16px 16px',               // 1 dots
+  '24px 24px, 24px 24px',    // 2 grid   -- two gradients
+  '22px 22px',               // 3 diagonal
+  '37px 37px, 61px 61px',    // 4 stars  -- two gradients
+  '18px 18px, 18px 18px',    // 5 weave  -- two gradients
+  '14px 14px',               // 6 rules
+  '18px 18px',               // 7 columns
+  '46px 46px',               // 8 bubbles
+  '26px 26px',               // 9 ripples
+  '30px 30px, 30px 30px',    // 10 chevron -- two gradients
+  '20px 20px, 40px 40px'     // 11 scatter -- two gradients
+];
+
+function applyWallpaper(){
+  const [, ink, glowCol] = WP_BG[wp.bg] || WP_BG[0];
+  const r = document.documentElement.style;
+  // Font is part of the page theme, so it rides the same save/apply
+  // path as the colours -- "it applies everything".
+  document.body.style.fontFamily = (PAGE_FONTS[wp.font] || PAGE_FONTS[0])[1];
+  r.setProperty('--ink', ink);
+  r.setProperty('--purple', wp.accent);
+  // Surfaces are derived from the base rather than fixed, so a light
+  // or unusual background doesn't leave the cards looking detached.
+  r.setProperty('--ink-2',    `color-mix(in srgb, ${ink} 84%, #ffffff)`);
+  r.setProperty('--surface',  `color-mix(in srgb, ${ink} 76%, #ffffff)`);
+  r.setProperty('--surface-2',`color-mix(in srgb, ${ink} 68%, #ffffff)`);
+  r.setProperty('--line',     `color-mix(in srgb, ${ink} 55%, ${wp.accent})`);
+  r.setProperty('--lilac',    `color-mix(in srgb, ${wp.accent} 55%, #ffffff)`);
+
+  const halo = wp.glow === 0 ? 'transparent'
+             : wp.glow === 1 ? glowCol
+             : `color-mix(in srgb, ${glowCol} 60%, ${wp.accent})`;
+  // ── WHY THE TEXTURE NEVER SHOWED ──────────────────────────────
+  // The old code set `background` (the SHORTHAND, which resets
+  // background-image, -size, -repeat and -color together) and then
+  // appended to backgroundImage afterwards. Two problems:
+  //
+  //   1. The shorthand had already written a background-COLOR layer,
+  //      and a colour is not a layer image can stack onto -- so the
+  //      pattern was appended after an opaque fill and covered by it.
+  //   2. backgroundSize listed two entries while backgroundImage often
+  //      had three, so the sizes lined up against the wrong layers.
+  //
+  // Now every layer is built in ONE list, topmost first, with a
+  // matching size for each, and the flat colour set separately as
+  // background-color where it belongs -- underneath everything.
+  const layers = [];
+  const sizes  = [];
+  if (wp.pattern) {
+    layers.push(patternCss(wp.pattern, wp.accent));
+    sizes.push(PATTERN_SIZE[wp.pattern]);
+  }
+  layers.push(`radial-gradient(1100px 520px at 50% -8%, ${halo} 0%, transparent 62%)`);
+  sizes.push('auto');
+
+  document.body.style.background      = '';          // clear the shorthand
+  document.body.style.backgroundColor = ink;
+  document.body.style.backgroundImage = layers.join(', ');
+  document.body.style.backgroundSize  = sizes.join(', ');
+  document.body.style.backgroundRepeat = 'repeat';
+  document.body.style.backgroundAttachment = 'fixed';
+
+  localStorage.setItem('ntran_wp', JSON.stringify(wp));
+  refreshWallpaperUI();
+}
+
+function refreshWallpaperUI(){
+  document.querySelectorAll('[data-wpbg]').forEach(b=>
+    b.setAttribute('aria-pressed', +b.dataset.wpbg === wp.bg ? 'true':'false'));
+  document.querySelectorAll('[data-wpac]').forEach(b=>
+    b.setAttribute('aria-pressed', b.dataset.wpac === wp.accent ? 'true':'false'));
+  document.querySelectorAll('[data-wppt]').forEach(b=>
+    b.setAttribute('aria-pressed', +b.dataset.wppt === wp.pattern ? 'true':'false'));
+  document.querySelectorAll('[data-glow]').forEach(b=>
+    b.setAttribute('aria-pressed', +b.dataset.glow === wp.glow ? 'true':'false'));
+}
+
+(function buildWallpaper(){
+  const bg = document.getElementById('wpBgList');
+  WP_BG.forEach((t,i)=>{
+    const b = document.createElement('button');
+    b.className = 'wpsw'; b.dataset.wpbg = i;
+    b.style.background = `radial-gradient(90% 70% at 50% 0%, ${t[2]}, ${t[1]})`;
+    b.innerHTML = '<b>' + t[0] + '</b>';
+    b.onclick = ()=>{ wp.bg = i; applyWallpaper(); };
+    bg.appendChild(b);
+  });
+  const ac = document.getElementById('wpAccentList');
+  WP_ACCENT.forEach(c=>{
+    const b = document.createElement('button');
+    b.style.background = c; b.dataset.wpac = c; b.setAttribute('aria-label', c);
+    b.onclick = ()=>{ wp.accent = c; applyWallpaper(); };
+    ac.appendChild(b);
+  });
+  const pt = document.getElementById('wpPatternList');
+  WP_PATTERN.forEach((n,i)=>{
+    const b = document.createElement('button'); b.textContent = n; b.dataset.wppt = i;
+    b.onclick = ()=>{ wp.pattern = i; applyWallpaper(); };
+    pt.appendChild(b);
+  });
+  document.querySelectorAll('[data-glow]').forEach(b=>{
+    b.onclick = ()=>{ wp.glow = +b.dataset.glow; applyWallpaper(); };
+  });
+  const cu = document.getElementById('wpAccentCustom');
+  cu.value = wp.accent.startsWith('#') ? wp.accent : '#9B3DF0';
+  cu.oninput = (e)=>{ wp.accent = e.target.value; applyWallpaper(); };
+
+  applyWallpaper();
+})();
+
+/* Drawer. The scrim is a separate element from the panel so tapping
+   beside it closes -- putting the click on the panel itself would
+   swallow taps meant for the buttons inside. */
+const drawer = document.getElementById('drawer');
+const scrim  = document.getElementById('scrim');
+const burger = document.getElementById('burger');
+
+function openDrawer(){
+  drawer.classList.add('open'); scrim.classList.add('open');
+  burger.setAttribute('aria-expanded','true');
+}
+function closeDrawer(){
+  drawer.classList.remove('open'); scrim.classList.remove('open');
+  burger.setAttribute('aria-expanded','false');
+}
+burger.onclick = ()=> drawer.classList.contains('open') ? closeDrawer() : openDrawer();
+scrim.onclick  = closeDrawer;
+
+// Drawer -> Settings. Close the drawer first, or it sits on top of the
+// window it just opened.
+document.getElementById('openSettings').onclick = ()=>{
+  closeDrawer(); openModal('mSettings');
+};
+[['openThemeHtml','mThemeHtml'], ['openThemeNexus','mThemeNexus'],
+ ['openInfoHtml','mInfoHtml'],
+ ['openInfo','mInfo']].forEach(([btn, win])=>{
+  const b = document.getElementById(btn);
+  if (b) b.onclick = ()=>{ closeDrawer(); openModal(win); };
+});
+
+// ── Vinyl direction ───────────────────────────────────────────────
+// Two explicit buttons rather than one toggle: the question is "which
+// way", and a single button cannot show which way it is currently set.
+
+/* ── LAMP WHEEL ───────────────────────────────────────────────────
+   The arc spans 180 degrees from the left end to the right. Angle is
+   converted to a value in the device's OWN range -- lampMin/lampMax
+   come from the state blob rather than being hardcoded here, so the
+   two cannot drift if the firmware's floor changes. */
+const LAMP_COLS = ['#FFFFFF','#FFE9C4','#FFC46B','#FF8A3D','#FF3B30','#FF2D78',
+                   '#FF3BE0','#C64BFF','#9B3DF0','#6E3BFF','#2A4BFF','#0088FF',
+                   '#00C8FF','#00E5D0','#00FF8C','#39FF14','#9BFF00','#EDFF00',
+                   '#FFD400','#FFF4D6'];
+let lampDrag = false;
+let lampLast = 0;      // last value the knob showed, for a release with no coords
+let lampPending = false;   // waiting for the device to echo lampLast
+let lampSentAt = 0;
+let lastTokKey = null;   // see render(): the slot rails only repaint on a real change
+
+function lampRange(){
+  return { lo: (S.lampMin != null ? S.lampMin : 50),
+           hi: (S.lampMax != null ? S.lampMax : 200) };
+}
+function lampPaint(v){
+  const arc = document.getElementById('lampArc');
+  const kn  = document.getElementById('lampKnob');
+  const lab = document.getElementById('lampVal');
+  if (!arc || !kn) return;
+  const { lo, hi } = lampRange();
+  // Off parks the knob at the left end rather than hiding it, so the
+  // control still shows where dragging would begin.
+  const t = v ? (v - lo) / (hi - lo) : 0;
+  const a = Math.PI - t * Math.PI;              // pi (left) .. 0 (right)
+  const cx = 130, cy = 130, r = 110;
+  const x = cx + r * Math.cos(a), y = cy - r * Math.sin(a);
+  arc.setAttribute('d', t <= 0 ? '' :
+    `M20 130 A110 110 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)}`);
+  kn.setAttribute('cx', x.toFixed(1));
+  kn.setAttribute('cy', y.toFixed(1));
+  if (lab) lab.textContent = v ? v : 'Off';
+  const on = v ? (t < 0.34 ? 0 : t < 0.7 ? 1 : 2) : -1;
+  for (let i = 0; i < 3; i++){
+    const el = document.getElementById('bulb' + i);
+    if (el) el.classList.toggle('on', i === on);
+  }
+  const now = document.getElementById('lampNow');
+  if (now) now.textContent = v ? ' ' + v : ' Off';
+}
+function lampFromEvent(ev){
+  const svg = document.getElementById('lampDial');
+  if (!svg) return 0;
+  const r0  = svg.getBoundingClientRect();
+  // ── WHY THE PHONE COULD NOT MOVE IT ───────────────────────────
+  // On TOUCHEND, ev.touches is EMPTY -- the finger has left the
+  // screen, so the live list has nothing in it. The old code read
+  // ev.touches[0].clientX there and threw, which meant the release
+  // handler died before it ever called send(). Dragging looked fine
+  // and then nothing was published.
+  //
+  // changedTouches is the list that still holds the finger that just
+  // lifted, which is exactly the one we want.
+  const pt  = (ev.touches && ev.touches.length) ? ev.touches[0]
+            : (ev.changedTouches && ev.changedTouches.length) ? ev.changedTouches[0]
+            : ev;
+  if (pt.clientX === undefined) return lampLast;
+  const px  = pt.clientX - r0.left;
+  const py  = pt.clientY - r0.top;
+  // Into the 260x150 viewBox.
+  const vx = px * (260 / r0.width), vy = py * (150 / r0.height);
+  let a = Math.atan2(130 - vy, vx - 130);       // 0 right, pi left
+  if (a < 0) a = (vx < 130) ? Math.PI : 0;      // below the line: clamp to an end
+  const t = 1 - (a / Math.PI);
+  const { lo, hi } = lampRange();
+  const v = Math.round(lo + t * (hi - lo));
+  // All the way left is OFF, same rule as the screen -- otherwise the
+  // dial can never switch it off, only dim it to 50.
+  return (v <= lo) ? 0 : v;
+}
+(function wireLamp(){
+  const svg = document.getElementById('lampDial');
+  if (!svg) return;
+  const move = (ev)=>{ if (!lampDrag) return; ev.preventDefault();
+                       lampLast = lampFromEvent(ev); lampPaint(lampLast); };
+  const up   = (ev)=>{ if (!lampDrag) return; lampDrag = false;
+                       // Publish on RELEASE only -- a drag fires dozens of
+                       // events a second and would flood the broker.
+                       //
+                       // Sent from lampLast rather than recomputed here:
+                       // the release event may carry no usable coordinates
+                       // at all, and the last painted value is what she
+                       // actually sees under her finger.
+                       lampPending = true; lampSentAt = Date.now();
+                       send({ cmd:'lampBright', value: lampLast }); };
+  const down = (ev)=>{ lampDrag = true; ev.preventDefault();
+                       lampLast = lampFromEvent(ev); lampPaint(lampLast); };
+  svg.addEventListener('mousedown', down);
+  svg.addEventListener('touchstart', down, { passive:false });
+  window.addEventListener('mousemove', move);
+  window.addEventListener('touchmove', move, { passive:false });
+  window.addEventListener('mouseup', up);
+  window.addEventListener('touchend', up);
+
+  const off = document.getElementById('lampOff');
+  if (off) off.onclick = ()=>{ send({ cmd:'lampBright', value:0 }); lampPaint(0); };
+
+  const cl = document.getElementById('lampColList');
+  if (cl) LAMP_COLS.forEach(c=>{
+    const b = document.createElement('button');
+    b.className = 'sw'; b.style.background = c; b.title = c;
+    b.dataset.lcol = c.slice(1);
+    b.onclick = ()=> send({ cmd:'lampColor', value: c.slice(1) });
+    cl.appendChild(b);
+  });
+  document.querySelectorAll('[data-lscope]').forEach(b=>{
+    b.onclick = ()=> send({ cmd:'lampScope', value:+b.dataset.lscope });
+  });
+  const ol = document.getElementById('openLamp');
+  if (ol) ol.onclick = ()=> openModal('mLamp');
+  const bk = document.getElementById('lampBack');
+  if (bk) bk.onclick = ()=>{ closeModal('mLampSet'); openModal('mLamp'); };
+  const os = document.getElementById('openLampSet');
+  if (os) os.onclick = ()=>{ closeModal('mLamp'); openModal('mLampSet'); };
+
+  // ── Name tag ──
+  const ns = document.getElementById('nameSpinBtn');
+  if (ns) ns.onclick = ()=> send({ cmd:'nameSpin' });
+  const nd = document.getElementById('nameDirBtn');
+  if (nd) nd.onclick = ()=> send({ cmd:'nameDir', value: S.nameCcw ? 0 : 1 });
+})();
+
+const sd = document.getElementById('styleDefault');
+if (sd) sd.onclick = ()=>{
+  send({ cmd:'saveStyleDefault' });
+  sd.textContent = 'Saved as default';
+  setTimeout(()=> sd.textContent = 'Make this my default', 1800);
+};
+
+// Direction: read the device's own vinylCcw and send the opposite.
+// Nothing is assumed locally -- the button always reflects what the
+// Nexus last reported, so the two cannot drift apart.
+const dirBtn = document.getElementById('dirBtn');
+if (dirBtn) dirBtn.onclick = ()=> send({ cmd:'vinylDir', value: S.vinylCcw ? 0 : 1 });
+
+
+
+document.querySelectorAll('[data-dir]').forEach(b=>{
+  b.onclick = ()=> send({ cmd:'vinylDir', value: b.dataset.dir === 'ccw' ? 1 : 0 });
+});
+
+// ── Add / remove / switch accounts ────────────────────────────────
+
+// Settings -> its sub-windows. Same reason: one at a time.
+document.getElementById('openWifi').onclick = ()=>{
+  closeModal('mSettings'); openModal('mWifi');
+};
+// The Wallpaper row was removed from Settings, so there is no longer a
+// button to bind here. The sheet and its builders are left in place --
+// harmless, and one line restores the entry point if it is wanted back.
+
+
+/* Tapping a slot opens that element. Delegated to the container
+   rather than bound per slot, because render() rewrites the slot
+   contents on every state update -- per-slot handlers would be lost
+   each time. */
+let curEl = 0;   // which element the detail window is showing
+
+function openElement(id){
+  if (!id) return;                       // empty slot, nothing to configure
+  curEl = id;
+  document.getElementById('elName').textContent = MEMBERS[id] || ('Element ' + id);
+  document.getElementById('elMeta').textContent =
+    (BTS_IDS.has(id) ? 'BTS side' : 'CORTIS side') + ' \u00B7 ID 0x' +
+    id.toString(16).toUpperCase().padStart(2,'0');
+  const note = document.getElementById('elNote');
+  if (note){
+    // Only shown once all fourteen are in -- the entries are the reward
+    // for completing the set, not something available from the start.
+    const unlocked = (S.tokens || []).filter(x => x).length >= 14;
+    note.textContent = !unlocked ? ''
+      : (ALMANAC[id] || 'No entry written yet.');
+    note.style.color = ALMANAC[id] ? 'var(--lilac)' : 'var(--faint)';
+  }
+
+  // Identity, read from the same table the device uses so the two can
+  // never disagree.
+  const rgb = MEMBER_RGB[id] || [255,255,255];
+  document.getElementById('elType').textContent =
+    BTS_IDS.has(id) ? (id === 19 ? 'BTS \u00B7 Core' : 'BTS')
+                    : (id === 20 ? 'CORTIS \u00B7 Core' : 'CORTIS');
+  document.getElementById('elRgb').textContent = rgb.join(', ');
+  const dot = document.getElementById('elDot');
+  const hex = '#' + rgb.map(v => v.toString(16).padStart(2,'0')).join('');
+  dot.style.background = hex;
+  dot.style.boxShadow  = '0 0 22px ' + hex;
+  openModal('mElement');
+}
+
+
+
+['slotsL','slotsR'].forEach(gid=>{
+  document.getElementById(gid).addEventListener('click', e=>{
+    const d = e.target.closest('.slot'); if (!d) return;
+    openElement((S.tokens || [])[+d.dataset.slot] | 0);
+  });
+});
+
+// Unlocks at fourteen. Checked on every state update rather than once,
+// since tokens come and go.
+function refreshAlmanacLock(){
+  const b = document.getElementById('almanacBtn');
+  if (!b) return;
+  const seated = (S.tokens || []).filter(x => x).length;
+  b.style.display = seated >= 14 ? '' : 'none';
+}
+document.getElementById('almanacBtn').onclick = ()=>{
+  // Close the full-screen Elements window FIRST. Leaving it open put a
+  // second backdrop-filter layer and a running starfield animation
+  // behind this card, which is what made opening the almanac tear and
+  // stutter instead of simply appearing.
+  closeModal('mSynergy');
+  // Just opens the card now. It used to draw a ring of fourteen gems
+  // with halo lines and names, which duplicated the constellation on the
+  // device and invited tapping them here -- but the entries live on the
+  // Nexus, so every tap led nowhere. The card says where to read them
+  // instead.
+  openModal('mAlmanac');
+};
+
+
+document.getElementById('openSynergy').onclick = ()=>{
+  openModal('mSynergy');
+  // Rails have no width while the window is display:none, so the
+  // initial centring can't have worked -- redo it now that it does.
+  requestAnimationFrame(()=>{
+    ['slotsL','slotsR'].forEach(id=>{
+      const r = document.getElementById(id);
+      r.scrollLeft = r.scrollWidth / 3;
+    });
+  });
+};
+document.getElementById('openElemMode').onclick = ()=> openModal('mElemMode');
+document.querySelectorAll('[data-close]').forEach(b=>{
+  b.onclick = ()=> closeModal(b.dataset.close);
+});
+document.querySelectorAll('.modal').forEach(m=>{
+  m.addEventListener('click', e=>{ if (e.target === m) m.classList.remove('open'); });
+});
+document.querySelector('.sheet') && document.querySelectorAll('.sheet').forEach(sh=>{
+  sh.addEventListener('click', e=> e.stopPropagation());
+});
+document.addEventListener('keydown', e=>{
+  if (e.key !== 'Escape') return;
+  const open = document.querySelectorAll('.modal.open');
+  if (open.length) { open.forEach(m=> m.classList.remove('open')); syncSheetOpen(); }
+  else closeDrawer();
+});
+
+/* ── Wire up controls ────────────────────────────────────────────── */
+document.querySelectorAll('[data-cmd]').forEach(b=>{
+  b.onclick = ()=>{
+    const c = b.dataset.cmd;
+    if (c==='loop') send({cmd:'loop', value: !S.loop});
+    else            send({cmd:c});
+  };
+});
+document.querySelectorAll('#modeSeg button').forEach(b=>{
+  b.onclick = ()=>{
+    const m = b.dataset.mode;
+    // WAKE FIRST, and only when it is actually asleep.
+    //
+    // Sending it to Bluetooth while the screen is dark would start music
+    // behind a screen that looks off. The wake goes ahead of the mode so
+    // the device is already awake by the time the mode lands.
+    if (S.asleep) send({ cmd:'wake' });
+    // Entering Bluetooth always starts at the waiting screen.
+    btJustEntered = (m === 'bt');
+    send({cmd:'mode', value:m});
+    // Home isn't a player -- opening a transport window for it would
+    // be meaningless.
+    if (m === 'bt' || m === 'vinyl') { wantMode = m; applyPlayerMode(m); openModal('mPlayer'); }
+    else { wantMode = 'home'; closeModal('mPlayer'); }
+  };
+});
+
+/* One window serves both modes; this swaps what it says and which
+   controls apply. Two separate copies would mean duplicate element
+   ids, and render() would update one while silently ignoring the
+   other. */
+function applyPlayerMode(m){
+  const t = document.getElementById('playerTitle');
+  const p = document.getElementById('playerSub');
+  const v = document.getElementById('vinylOnly');
+  if (m === 'vinyl'){
+    t.textContent = 'Vinyl';
+    // Name the disc that's actually on the platform, matching the
+    // device's own screen rather than a generic prompt.
+    p.textContent = S.title ? ('Now spinning \u00B7 ' + S.title)
+                            : 'Place a disc on the platform to start it playing.';
+    v.style.display = '';
+  } else {
+    t.textContent = 'Bluetooth';
+    p.textContent = S.btConnected
+      ? (S.title ? ('Playing \u00B7 ' + S.title) : 'Connected')
+      : 'Connect your phone to Arcoer Nexus.';
+    v.style.display = 'none';   // the phone owns volume; repeat has no meaning here
+  }
+}
+const vol = document.getElementById('vol');
+vol.addEventListener('input', ()=> document.getElementById('volVal').textContent = vol.value + '%');
+// Only publish on release -- dragging fires input continuously and
+// would flood the broker with dozens of messages per second.
+vol.addEventListener('change', ()=> send({cmd:'volume', value:+vol.value}));
+
+document.getElementById('resetBtn').onclick = ()=>{
+  if (confirm('Factory reset wipes the name, Wi-Fi and all saved settings. This cannot be undone.'))
+    send({cmd:'factoryReset'});
+};
+
+render();
+function showLock(reason){
+  const l = document.getElementById('lockScreen');
+  if (l) l.style.display = 'flex';
+  const r = document.getElementById('lockReason');
+  if (r && reason){ r.textContent = reason; r.style.display = ''; }
+  document.body.classList.add('locked');
+}
+
+connect();
+</script>
+</body>
+</html>
